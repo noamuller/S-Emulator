@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<S-Program name="Successor" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="S-Emulator-v1.xsd">
+	<S-Instructions>
+	    <S-Instruction type="synthetic" name="ASSIGNMENT">
+			<S-Variable>y</S-Variable>
+			<S-Instruction-Arguments>
+				<S-Instruction-Argument name="assignedVariable" value="x1"/>
+			</S-Instruction-Arguments>
+		</S-Instruction>
+		<S-Instruction type="basic" name="INCREASE">
+			<S-Variable>y</S-Variable>
+		</S-Instruction>		
+	</S-Instructions>	
+</S-Program>
