@@ -86,4 +86,14 @@ public final class Program {
             this.originChains = originChains; this.sumCycles = sumCycles;
         }
     }
+    public Set<String> labelsUsed() {
+        LinkedHashSet<String> out = new LinkedHashSet<>(); // preserves insertion order
+        for (Instruction i : instructions) {
+            if (i.label != null) {
+                String lbl = i.label.trim();
+                if (!lbl.isEmpty()) out.add(lbl);
+            }
+        }
+        return out;
+    }
 }

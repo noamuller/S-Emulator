@@ -7,17 +7,64 @@ import java.util.*;
 
 public final class ProgramParser {
 
+    // ---------- Public API for GUI / callers ----------
+
+    /**
+     * Convenience wrapper for the GUI:
+     * Parse XML from a File and return a Program, or throw Exception with a clear message.
+     */
+    public static Program parseFromXml(File file) throws Exception {
+        ParseResult pr = parseXml(file);
+        if (pr.error != null) throw new Exception(pr.error);
+        return pr.program;
+    }
+
+    /**
+     * Convenience wrapper that accepts a String path.
+     */
+    public static Program parseFromXml(String path) throws Exception {
+        return parseFromXml(new File(path));
+    }
+
+    /**
+     * PUBLIC wrapper so UI can validate labels on a whole Program.
+     * Internally we call the existing (package-private) method that accepts a List<Instruction>.
+     */
+    public static String validateLabels(Program program) {
+        if (program == null) return "Program is null";
+        // use the rendered instruction list of degree 0; it's fine for label existence checks
+        Program.Rendered r = program.expandToDegree(0);
+        return validateLabels(r.list);
+        // If Program doesn't have expandToDegree(0) in your codebase,
+        // replace with: return validateLabels(program.getInstructions());
+    }
+
+    // ---------- Internal Parse Result ----------
+
     public static final class ParseResult {
         public final Program program;
         public final String error;
-        ParseResult(Program program, String error) { this.program = program; this.error = error; }
+
+        ParseResult(Program program, String error) {
+            this.program = program;
+            this.error = error;
+        }
+
         public static ParseResult ok(Program p){ return new ParseResult(p, null); }
         public static ParseResult err(String e){ return new ParseResult(null, e); }
     }
 
+    // ---------- Entry: Parse XML (returns ParseResult) ----------
+
+    /**
+     * The core parser used internally. Returns a ParseResult so callers
+     * can decide whether to throw or handle gracefully.
+     */
     public static ParseResult parseXml(File file) {
+        if (file == null) return ParseResult.err("File is null");
         if (!file.exists()) return ParseResult.err("File does not exist: " + file.getAbsolutePath());
-        if (!file.getName().toLowerCase(Locale.ROOT).endsWith(".xml")) return ParseResult.err("Not an XML file (.xml required)");
+        if (!file.getName().toLowerCase(Locale.ROOT).endsWith(".xml"))
+            return ParseResult.err("Not an XML file (.xml required)");
         try {
             Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(file);
             doc.getDocumentElement().normalize();
@@ -37,6 +84,7 @@ public final class ProgramParser {
         }
     }
 
+    // ---------- Parsers for the two formats ----------
 
     private static ParseResult parseSimple(Element root) {
         String name = attrOr(root, "name", "Unnamed");
@@ -113,7 +161,7 @@ public final class ProgramParser {
                 requireNonEmpty(jnzTarget, "JUMP_NOT_ZERO requires <S-Instruction-Arguments>/<JNZLabel>");
                 command = "IF " + var + " != 0 GOTO " + jnzTarget;
 
-                // SYNTHETIC we support
+                // ----- Synthetic we support -----
             } else if (equalsIgnoreCase(nameAttr, "ZERO_VARIABLE")) {
                 requireNonEmpty(var, "ZERO_VARIABLE requires <S-Variable>");
                 typeHint = "S";
@@ -184,6 +232,7 @@ public final class ProgramParser {
                 command = "IF " + var + " == " + other + " GOTO " + labelArg;
 
             } else {
+                // unknown synthetic: keep something readable
                 typeHint = "S";
                 command = (nameAttr.isEmpty() ? "UNKNOWN" : nameAttr) + " " + (var == null ? "" : var);
             }
@@ -198,24 +247,32 @@ public final class ProgramParser {
         return ParseResult.ok(new Program(name, ins));
     }
 
-    private static String validateLabels(List<Instruction> ins) {
+    // ---------- Label validation over instruction list ----------
+
+    static String validateLabels(List<Instruction> ins) {
         Set<String> labels = new HashSet<>();
-        for (Instruction i : ins) if (i.label != null && !i.label.isBlank())
-            labels.add(i.label.trim().toUpperCase(Locale.ROOT));
+        for (Instruction i : ins) {
+            if (i.label != null && !i.label.isBlank())
+                labels.add(i.label.trim().toUpperCase(Locale.ROOT));
+        }
 
         for (Instruction i : ins) {
             if (i instanceof Instruction.IfNzGoto j) {
                 String t = j.target.toUpperCase(Locale.ROOT);
                 if (!"EXIT".equals(t) && !labels.contains(t)) return "Illegal GOTO to missing label: " + j.target;
+
             } else if (i instanceof Instruction.Goto g) {
                 String t = g.target.toUpperCase(Locale.ROOT);
                 if (!"EXIT".equals(t) && !labels.contains(t)) return "Illegal GOTO to missing label: " + g.target;
+
             } else if (i instanceof Instruction.IfZeroGoto z) {
                 String t = z.target.toUpperCase(Locale.ROOT);
                 if (!"EXIT".equals(t) && !labels.contains(t)) return "Illegal GOTO to missing label: " + z.target;
+
             } else if (i instanceof Instruction.IfEqConstGoto ec) {
                 String t = ec.target.toUpperCase(Locale.ROOT);
                 if (!"EXIT".equals(t) && !labels.contains(t)) return "Illegal GOTO to missing label: " + ec.target;
+
             } else if (i instanceof Instruction.IfEqVarGoto ev) {
                 String t = ev.target.toUpperCase(Locale.ROOT);
                 if (!"EXIT".equals(t) && !labels.contains(t)) return "Illegal GOTO to missing label: " + ev.target;
@@ -223,6 +280,8 @@ public final class ProgramParser {
         }
         return null;
     }
+
+    // ---------- DOM helpers ----------
 
     private static boolean equalsIgnoreCase(String a, String b) { return a != null && a.equalsIgnoreCase(b); }
 
