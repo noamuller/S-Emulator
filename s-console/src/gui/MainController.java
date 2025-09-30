@@ -250,7 +250,7 @@ public class MainController {
             showError(ex.getMessage());
         }
     }
-
+//ss
     @FXML
     private void onShowHistory() {
         if (historyPane == null) return;
