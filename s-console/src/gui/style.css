@@ -31,3 +31,7 @@
     -fx-font-family: Consolas, "Courier New", monospace;
     -fx-font-size: 12px;
 }
+/* highlight the current instruction during debugging */
+.table-row-cell.debug-current {
+    -fx-background-color: rgba(255, 215, 0, 0.35);
+}

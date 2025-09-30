@@ -1,129 +1,222 @@
 package sengine;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class Runner {
 
     public static final class RunResult {
+        public final Program.Rendered rendered;
         public final int degree;
-        public final List<Integer> inputs;
-        public final int y;
         public final int cycles;
         public final LinkedHashMap<String,Integer> variables;
-        public final Program.Rendered rendered;
-        RunResult(int degree, List<Integer> inputs, int y, int cycles, LinkedHashMap<String,Integer> vars,
-                  Program.Rendered rendered) {
-            this.degree=degree; this.inputs=inputs; this.y=y; this.cycles=cycles; this.variables=vars; this.rendered=rendered;
+        public final int y;
+
+        RunResult(Program.Rendered rendered, int degree, int cycles, LinkedHashMap<String,Integer> vars) {
+            this.rendered = rendered;
+            this.degree = degree;
+            this.cycles = cycles;
+            this.variables = vars;
+            this.y = vars.getOrDefault("y", 0);
         }
     }
 
+    /** Run program at the given expansion degree with the given inputs (x1, x2, x3, ...). */
     public static RunResult run(Program program, int degree, List<Integer> inputs) {
+        if (program == null) throw new IllegalArgumentException("Program is null");
+        degree = Math.max(0, Math.min(degree, program.maxDegree()));
         Program.Rendered r = program.expandToDegree(degree);
 
-        Map<String,Integer> vars = new HashMap<>();
+        // Variables map (LinkedHashMap so we keep a nice display order)
+        LinkedHashMap<String,Integer> vars = new LinkedHashMap<>();
         vars.put("y", 0);
-        for (int i=0;i<inputs.size();i++) vars.put("x"+(i+1), Math.max(0, inputs.get(i)));
+        // preload inputs: x1, x2, ...
+        if (inputs != null) {
+            for (int i = 0; i < inputs.size(); i++) {
+                vars.put("x" + (i + 1), Math.max(0, inputs.get(i)));
+            }
+        }
 
         int pc = 0;
         int cycles = 0;
 
-        while (pc < r.list.size()) {
-            Instruction inst = r.list.get(pc);
-            cycles += inst.cycles();
-
-            if (inst instanceof Instruction.Inc inc) {
-                String v = inc.v.name();
-                vars.put(v, vars.getOrDefault(v,0) + 1);
-                pc++;
-
-            } else if (inst instanceof Instruction.Dec dec) {
-                String v = dec.v.name();
-                vars.put(v, Math.max(0, vars.getOrDefault(v,0) - 1));
-                pc++;
-
-            } else if (inst instanceof Instruction.Nop) {
-                pc++;
-
-            } else if (inst instanceof Instruction.IfNzGoto j) {
-                int val = vars.getOrDefault(j.v.name(), 0);
-                if (val != 0) {
-                    if (j.target.equalsIgnoreCase("EXIT")) break;
-                    Integer idx = r.labelIndex.get(j.target.toUpperCase(Locale.ROOT));
-                    if (idx == null) throw new IllegalStateException("Missing label at runtime: "+j.target);
-                    pc = idx;
-                } else pc++;
-
-            } else if (inst instanceof Instruction.Assign a) {
-                int srcVal = vars.getOrDefault(a.src.name(), 0);
-                vars.put(a.dst.name(), srcVal);
-                pc++;
-
-            } else if (inst instanceof Instruction.Goto g) {
-                if (g.target.equalsIgnoreCase("EXIT")) break;
-                Integer idx = r.labelIndex.get(g.target.toUpperCase(Locale.ROOT));
-                if (idx == null) throw new IllegalStateException("Missing label at runtime: "+g.target);
-                pc = idx;
-
-            } else if (inst instanceof Instruction.SetZero s0) {
-                vars.put(s0.v.name(), 0);
-                pc++;
-
-            } else if (inst instanceof Instruction.SetConst sc) {
-                vars.put(sc.v.name(), sc.n);
-                pc++;
-
-            } else if (inst instanceof Instruction.IfZeroGoto jz) {
-                int val = vars.getOrDefault(jz.v.name(), 0);
-                if (val == 0) {
-                    if (jz.target.equalsIgnoreCase("EXIT")) break;
-                    Integer idx = r.labelIndex.get(jz.target.toUpperCase(Locale.ROOT));
-                    if (idx == null) throw new IllegalStateException("Missing label at runtime: "+jz.target);
-                    pc = idx;
-                } else pc++;
-
-            } else if (inst instanceof Instruction.IfEqConstGoto jc) {
-                int val = vars.getOrDefault(jc.v.name(), 0);
-                if (val == jc.c) {
-                    if (jc.target.equalsIgnoreCase("EXIT")) break;
-                    Integer idx = r.labelIndex.get(jc.target.toUpperCase(Locale.ROOT));
-                    if (idx == null) throw new IllegalStateException("Missing label at runtime: "+jc.target);
-                    pc = idx;
-                } else pc++;
-
-            } else if (inst instanceof Instruction.IfEqVarGoto jv) {
-                int a = vars.getOrDefault(jv.a.name(), 0);
-                int b = vars.getOrDefault(jv.b.name(), 0);
-                if (a == b) {
-                    if (jv.target.equalsIgnoreCase("EXIT")) break;
-                    Integer idx = r.labelIndex.get(jv.target.toUpperCase(Locale.ROOT));
-                    if (idx == null) throw new IllegalStateException("Missing label at runtime: "+jv.target);
-                    pc = idx;
-                } else pc++;
-
-            } else {
-                pc++;
+        // Build label -> index map (already provided in Program.Rendered, but we re-use here)
+        Map<String,Integer> labelToIndex = new HashMap<>();
+        for (int i = 0; i < r.list.size(); i++) {
+            String lbl = r.list.get(i).label;
+            if (lbl != null && !lbl.isBlank()) {
+                labelToIndex.put(lbl.toUpperCase(Locale.ROOT), i);
             }
         }
 
-        int y = vars.getOrDefault("y", 0);
-        LinkedHashMap<String,Integer> ordered = orderVars(vars);
-        return new RunResult(degree, inputs, y, cycles, ordered, r);
+        while (pc >= 0 && pc < r.list.size()) {
+            Instruction inst = r.list.get(pc);
+            String text = inst.text == null ? "" : inst.text.trim();
+
+            // Count cycles
+            cycles += Math.max(0, inst.cycles());
+
+            // 1) GOTO EXIT / GOTO Lk
+            Matcher m;
+            if ((m = RX_GOTO.matcher(text)).matches()) {
+                String target = m.group(1).toUpperCase(Locale.ROOT);
+                if (target.equals("EXIT")) break;
+                Integer idx = labelToIndex.get(target);
+                if (idx == null) throw new IllegalStateException("Unknown label: " + target);
+                pc = idx;
+                continue;
+            }
+
+            // 2) IF <var> == 0 GOTO ...
+            if ((m = RX_IF_EQ_ZERO.matcher(text)).matches()) {
+                String v = m.group(1);
+                String target = m.group(2);
+                if (get(vars, v) == 0) {
+                    if (target.equalsIgnoreCase("EXIT")) break;
+                    Integer idx = labelToIndex.get(target.toUpperCase(Locale.ROOT));
+                    if (idx == null) throw new IllegalStateException("Unknown label: " + target);
+                    pc = idx;
+                    continue;
+                } else {
+                    pc++;
+                    continue;
+                }
+            }
+
+            // 3) IF <var> != 0 GOTO ...
+            if ((m = RX_IF_NE_ZERO.matcher(text)).matches()) {
+                String v = m.group(1);
+                String target = m.group(2);
+                if (get(vars, v) != 0) {
+                    if (target.equalsIgnoreCase("EXIT")) break;
+                    Integer idx = labelToIndex.get(target.toUpperCase(Locale.ROOT));
+                    if (idx == null) throw new IllegalStateException("Unknown label: " + target);
+                    pc = idx;
+                    continue;
+                } else {
+                    pc++;
+                    continue;
+                }
+            }
+
+            // 4) IF <varA> == <varB> GOTO ...
+            if ((m = RX_IF_EQ_VAR.matcher(text)).matches()) {
+                String a = m.group(1);
+                String b = m.group(2);
+                String target = m.group(3);
+                if (get(vars, a) == get(vars, b)) {
+                    if (target.equalsIgnoreCase("EXIT")) break;
+                    Integer idx = labelToIndex.get(target.toUpperCase(Locale.ROOT));
+                    if (idx == null) throw new IllegalStateException("Unknown label: " + target);
+                    pc = idx;
+                    continue;
+                } else {
+                    pc++;
+                    continue;
+                }
+            }
+
+            // 5) IF <var> == CONST GOTO ...
+            if ((m = RX_IF_EQ_CONST.matcher(text)).matches()) {
+                String a = m.group(1);
+                int c = Integer.parseInt(m.group(2));
+                String target = m.group(3);
+                if (get(vars, a) == c) {
+                    if (target.equalsIgnoreCase("EXIT")) break;
+                    Integer idx = labelToIndex.get(target.toUpperCase(Locale.ROOT));
+                    if (idx == null) throw new IllegalStateException("Unknown label: " + target);
+                    pc = idx;
+                    continue;
+                } else {
+                    pc++;
+                    continue;
+                }
+            }
+
+            // 6) dst <- dst + 1
+            if ((m = RX_INC.matcher(text)).matches()) {
+                String dst = m.group(1);
+                set(vars, dst, get(vars, dst) + 1);
+                pc++;
+                continue;
+            }
+
+            // 7) dst <- dst - 1
+            if ((m = RX_DEC.matcher(text)).matches()) {
+                String dst = m.group(1);
+                set(vars, dst, Math.max(0, get(vars, dst) - 1));
+                pc++;
+                continue;
+            }
+
+            // 8) dst <- src
+            if ((m = RX_ASSIGN_VAR.matcher(text)).matches()) {
+                String dst = m.group(1);
+                String src = m.group(2);
+                set(vars, dst, get(vars, src));
+                pc++;
+                continue;
+            }
+
+            // 9) dst <- CONST
+            if ((m = RX_ASSIGN_CONST.matcher(text)).matches()) {
+                String dst = m.group(1);
+                int c = Integer.parseInt(m.group(2));
+                set(vars, dst, Math.max(0, c));
+                pc++;
+                continue;
+            }
+
+            // 10) dst <- 0 (covered by const case but keep for clarity)
+            if ((m = RX_ZERO.matcher(text)).matches()) {
+                String dst = m.group(1);
+                set(vars, dst, 0);
+                pc++;
+                continue;
+            }
+
+            // If we reach here, we didn't recognize the line; just step to avoid infinite loop.
+            pc++;
+        }
+
+        return new RunResult(r, degree, cycles, vars);
     }
 
-    private static LinkedHashMap<String,Integer> orderVars(Map<String,Integer> vars) {
-        List<String> xs = new ArrayList<>();
-        List<String> zs = new ArrayList<>();
-        for (String k : vars.keySet()) {
-            if (k.equals("y")) continue;
-            if (k.startsWith("x")) xs.add(k);
-            else if (k.startsWith("z")) zs.add(k);
-        }
-        xs.sort(Comparator.comparingInt(k -> Integer.parseInt(k.substring(1))));
-        zs.sort(Comparator.comparingInt(k -> Integer.parseInt(k.substring(1))));
-        LinkedHashMap<String,Integer> out = new LinkedHashMap<>();
-        out.put("y", vars.getOrDefault("y", 0));
-        for (String k : xs) out.put(k, vars.get(k));
-        for (String k : zs) out.put(k, vars.get(k));
-        return out;
+    // ---------- Simple variable store helpers ----------
+    private static int get(Map<String,Integer> vars, String name) {
+        return vars.getOrDefault(name, 0);
     }
+    private static void set(Map<String,Integer> vars, String name, int value) {
+        vars.put(name, Math.max(0, value));
+    }
+
+    // ---------- Regex patterns for the supported textual forms ----------
+    // GOTO
+    private static final Pattern RX_GOTO = Pattern.compile("^GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
+
+    // IF var == 0 / != 0
+    private static final Pattern RX_IF_EQ_ZERO = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*==\\s*0\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_IF_NE_ZERO = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*!=\\s*0\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
+
+    // IF varA == varB
+    private static final Pattern RX_IF_EQ_VAR = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*==\\s*([xyz]\\d*|y)\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
+
+    // IF var == CONST
+    private static final Pattern RX_IF_EQ_CONST = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*==\\s*(\\d+)\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
+
+    // dst <- dst + 1
+    private static final Pattern RX_INC = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*\\1\\s*\\+\\s*1$", Pattern.CASE_INSENSITIVE);
+
+    // dst <- dst - 1
+    private static final Pattern RX_DEC = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*\\1\\s*-\\s*1$", Pattern.CASE_INSENSITIVE);
+
+    // dst <- src
+    private static final Pattern RX_ASSIGN_VAR = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*([xyz]\\d*|y)$", Pattern.CASE_INSENSITIVE);
+
+    // dst <- CONST
+    private static final Pattern RX_ASSIGN_CONST = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*(\\d+)$", Pattern.CASE_INSENSITIVE);
+
+    // dst <- 0
+    private static final Pattern RX_ZERO = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*0$", Pattern.CASE_INSENSITIVE);
 }

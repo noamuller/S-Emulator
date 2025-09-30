@@ -1,15 +1,21 @@
 package console;
 
-import sengine.*;
+import sengine.Program;
+import sengine.ProgramParser;
 
 import java.io.File;
-import java.util.*;
+import java.util.List;
+import java.util.Scanner;
 
+/**
+ * Minimal console shell for S-Emulator, updated for the v2 parser.
+ * Focus: load XML, view program, preview expansion degree (0/1).
+ * For תרגיל 2, execution + debug/history are handled in the GUI.
+ */
 public final class App {
 
     private static Program currentProgram = null;
     private static Program lastGoodProgram = null;
-    private static final RunHistory history = new RunHistory();
     private static final Scanner sc = new Scanner(System.in);
 
     public static void main(String[] args) {
@@ -21,8 +27,8 @@ public final class App {
                 case 1 -> cmdLoadXml();
                 case 2 -> cmdShowProgram();
                 case 3 -> cmdExpand();
-                case 4 -> cmdRun();
-                case 5 -> cmdHistory();
+                case 4 -> cmdRun();      // placeholder: direct users to GUI
+                case 5 -> cmdHistory();  // placeholder: direct users to GUI
                 case 6 -> { System.out.println("Bye!"); return; }
                 default -> System.out.println("Invalid choice. Please select 1..6.");
             }
@@ -31,134 +37,130 @@ public final class App {
 
     private static void printMenu() {
         System.out.println();
-        System.out.println("1) Load system XML");
-        System.out.println("2) Show program");
-        System.out.println("3) Expand");
-        System.out.println("4) Run program");
-        System.out.println("5) Show history/statistics");
-        System.out.println("6) Exit");
+        System.out.println("(1) Load system XML");
+        System.out.println("(2) Show program");
+        System.out.println("(3) Expand (preview degree)");
+        System.out.println("(4) Run program  [use GUI]");
+        System.out.println("(5) Show history [use GUI]");
+        System.out.println("(6) Exit");
     }
 
+    // ---------- Actions ----------
+
+    /** Updated to the new parser API (with optional XSD validation if present). */
     private static void cmdLoadXml() {
         System.out.print("Enter full path to XML file: ");
         String path = sc.nextLine().trim();
-        ProgramParser.ParseResult r = ProgramParser.parseXml(new File(path));
-        if (r.error != null) {
-            System.out.println("Error: " + r.error);
+        File xml = new File(path);
+
+        try {
+            // OPTIONAL: validate if S-Emulator-v2.xsd exists next to where you run.
+            File xsd = new File("S-Emulator-v2.xsd");
+            if (xsd.exists()) {
+                ProgramParser.validateWithXsd(xml, xsd);
+            }
+
+            Program p = ProgramParser.parseFromXml(xml);
+
+            String labelErr = ProgramParser.validateLabels(p);
+            if (labelErr != null) {
+                throw new IllegalArgumentException(labelErr);
+            }
+
+            currentProgram = p;
+            lastGoodProgram = p;
+            System.out.println("OK: program \"" + currentProgram.name + "\" loaded.");
+        } catch (Exception ex) {
+            System.out.println("Error: " + ex.getMessage());
             if (lastGoodProgram != null) {
                 currentProgram = lastGoodProgram;
                 System.out.println("Keeping previous valid program loaded.");
             } else {
                 currentProgram = null;
             }
-        } else {
-            currentProgram = r.program;
-            lastGoodProgram = r.program;
-            System.out.println("OK: program \"" + currentProgram.name + "\" loaded.");
         }
     }
 
+    /** Prints the unexpanded listing (degree 0). */
     private static void cmdShowProgram() {
-        if (!ensureLoaded()) return;
-        Program.Rendered r = currentProgram.expandToDegree(0);
-        System.out.println("Program: " + r.name);
-        Set<VariableRef> inputs = currentProgram.referencedVariables().stream()
-                .filter(v -> v.kind()== VariableRef.Kind.X)
-                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
-        Set<String> labels = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (Instruction i : currentProgram.instructions) if (i.label != null) labels.add(i.label);
-        if (r.labelIndex.containsKey("EXIT")) labels.add("EXIT");
-
-        System.out.println("Inputs used: " + (inputs.isEmpty() ? "(none)" : joinVars(inputs)));
-        System.out.println("Labels used: " + (labels.isEmpty() ? "(none)" : String.join(", ", labels)));
+        if (currentProgram == null) {
+            System.out.println("No program loaded.");
+            return;
+        }
+        var r = currentProgram.expandToDegree(0);
+        System.out.println();
+        System.out.println("Program: " + r.name + "  |  Degree: 0/" + currentProgram.maxDegree());
         for (String line : r.lines) System.out.println(line);
+        System.out.println("Total cycles (sum of listed): " + r.sumCycles);
     }
 
-    private static String joinVars(Set<VariableRef> vars) {
-        List<String> names = new ArrayList<>();
-        for (VariableRef v: vars) names.add(v.name());
-        return String.join(", ", names);
-    }
-
+    /** Lets you preview the expanded listing for degree 0/1. */
     private static void cmdExpand() {
-        if (!ensureLoaded()) return;
+        if (currentProgram == null) {
+            System.out.println("No program loaded.");
+            return;
+        }
         int max = currentProgram.maxDegree();
-        System.out.println("Max expansion degree: " + max);
-        int d = readInt("Enter degree [0.."+max+"]: ");
-        if (d < 0 || d > max) { System.out.println("Invalid degree."); return; }
-        Program.Rendered r = currentProgram.expandToDegree(d);
-        for (int i=0;i<r.lines.size();i++) {
-            String line = r.lines.get(i);
-            System.out.print(line);
-            List<String> chain = r.originChains.get(i);
-            for (String ch : chain) System.out.print("  <<<  " + ch.replace("#-1", "#?"));
-            System.out.println();
+        int deg = readInt("Enter expansion degree [0.." + max + "]: ");
+        deg = clamp(deg, 0, max);
+
+        var r = currentProgram.expandToDegree(deg);
+        System.out.println();
+        System.out.println("Program: " + r.name + "  |  Degree: " + deg + "/" + max);
+        for (String line : r.lines) System.out.println(line);
+        System.out.println("Total cycles (sum of listed): " + r.sumCycles);
+
+        // Optional: show origin chain of a specific instruction
+        if (!r.originChains.isEmpty()) {
+            String ans = readString("Show origin chain for which #? (empty to skip): ");
+            if (!ans.isBlank()) {
+                try {
+                    int idx = Integer.parseInt(ans.trim());
+                    if (idx >= 1 && idx <= r.originChains.size()) {
+                        List<String> chain = r.originChains.get(idx - 1);
+                        if (chain.isEmpty()) {
+                            System.out.println("No origin (basic instruction).");
+                        } else {
+                            System.out.println("Origin chain (latest first):");
+                            for (String s : chain) System.out.println("  " + s);
+                        }
+                    } else {
+                        System.out.println("Out of range.");
+                    }
+                } catch (NumberFormatException ignore) {
+                    System.out.println("Not a number.");
+                }
+            }
         }
     }
 
     private static void cmdRun() {
-        if (!ensureLoaded()) return;
-        int max = currentProgram.maxDegree();
-        System.out.println("Max expansion degree: " + max);
-        int d = readInt("Enter degree to run [0.."+max+"]: ");
-        if (d < 0 || d > max) { System.out.println("Invalid degree."); return; }
-
-        Set<VariableRef> inputs = currentProgram.referencedVariables().stream()
-                .filter(v -> v.kind()== VariableRef.Kind.X)
-                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
-        System.out.println("Enter comma-separated inputs for x1,x2,... (any count is accepted).");
-        System.out.println("Inputs used by program: " + (inputs.isEmpty() ? "(none)" : joinVars(inputs)));
-        System.out.print("Values: ");
-        String line = sc.nextLine().trim();
-        List<Integer> vals = parseCsvInts(line);
-
-        Runner.RunResult res = Runner.run(currentProgram, d, vals);
-        System.out.println("Executed program (degree "+d+").");
-        for (String l : res.rendered.lines) System.out.println(l);
-        System.out.println("Result:");
-        System.out.println("y = " + res.y);
-        for (Map.Entry<String,Integer> e : res.variables.entrySet()) {
-            if (e.getKey().equals("y")) continue;
-            System.out.println(e.getKey()+" = "+e.getValue());
-        }
-        System.out.println("Total cycles = " + res.cycles);
-        history.add(d, vals, res.y, res.cycles);
+        System.out.println("For תרגיל 2, please use the GUI to Run / Debug.");
     }
 
     private static void cmdHistory() {
-        if (!ensureLoaded()) return;
-        if (history.isEmpty()) { System.out.println("No runs yet."); return; }
-        System.out.println("Run# | Degree | Inputs | y | cycles");
-        for (RunHistory.Entry e : history.all()) {
-            System.out.println(String.format("%d | %d | %s | %d | %d",
-                    e.runNo, e.degree, e.inputs.toString(), e.y, e.cycles));
-        }
+        System.out.println("For תרגיל 2, please use the GUI to view History/Statistics.");
     }
 
-    private static boolean ensureLoaded() {
-        if (currentProgram == null) {
-            System.out.println("No valid program loaded. Please load an XML first.");
-            return false;
-        }
-        return true;
-    }
+    // ---------- Small helpers ----------
 
     private static int readInt(String prompt) {
         while (true) {
             System.out.print(prompt);
-            String s = sc.nextLine().trim();
-            try { return Integer.parseInt(s); } catch (Exception e) { System.out.println("Please enter a number."); }
+            String s = sc.nextLine();
+            try { return Integer.parseInt(s.trim()); }
+            catch (Exception ignore) { System.out.println("Please enter a number."); }
         }
     }
 
-    private static List<Integer> parseCsvInts(String s) {
-        if (s.isBlank()) return List.of();
-        List<Integer> out = new ArrayList<>();
-        for (String part : s.split(",")) {
-            part = part.trim();
-            if (part.isEmpty()) continue;
-            try { out.add(Integer.parseInt(part)); } catch (Exception ignore) { out.add(0); }
-        }
-        return out;
+    private static String readString(String prompt) {
+        System.out.print(prompt);
+        return sc.nextLine();
+    }
+
+    private static int clamp(int v, int lo, int hi) {
+        if (v < lo) return lo;
+        if (v > hi) return hi;
+        return v;
     }
 }

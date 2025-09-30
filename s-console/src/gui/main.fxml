@@ -133,7 +133,7 @@
                 </TitledPane>
 
                 <!-- History / Statistics -->
-                <TitledPane text="History • Statistics" expanded="false" VBox.vgrow="ALWAYS">
+                <TitledPane fx:id="historyPane" text="History • Statistics" expanded="false" VBox.vgrow="ALWAYS">
                     <VBox spacing="6" VBox.vgrow="ALWAYS">
                         <padding><Insets top="10" right="10" bottom="10" left="10"/></padding>
                         <TableView fx:id="historyTable" VBox.vgrow="ALWAYS">
@@ -152,6 +152,7 @@
                         </HBox>
                     </VBox>
                 </TitledPane>
+
 
                 <!-- Status -->
                 <VBox spacing="6" VBox.vgrow="ALWAYS">

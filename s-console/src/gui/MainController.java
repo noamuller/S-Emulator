@@ -1,5 +1,6 @@
 package gui;
 
+import javafx.application.Platform;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
@@ -14,9 +15,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * GUI controller for Exercise 2.
- * Implements: Load XML, Show Program, Expand (view only), Run, History view,
- * plus minimal UI scaffolding for function selector, debugger panel, and a history table.
+ * S-Emulator – תרגיל 2
+ * Full controller: load XML (Task), render degree 0/1, run, history, highlight,
+ * and step-by-step debugger (start/step/resume/stop) with current-row highlight.
  */
 public class MainController {
 
@@ -25,24 +26,23 @@ public class MainController {
     @FXML private TextField inputsField;
     @FXML private TextField degreeField;
     @FXML private TextField maxDegreeField;
-    @FXML private TextArea  labelsArea;
 
     @FXML private TableView<Row> instructionsTable;
     @FXML private TableColumn<Row, Number> colNum;
-    @FXML private TableColumn<Row, String> colType;
-    @FXML private TableColumn<Row, String> colLabel;
-    @FXML private TableColumn<Row, String> colText;
+    @FXML private TableColumn<Row, String>  colType;
+    @FXML private TableColumn<Row, String>  colLabel;
+    @FXML private TableColumn<Row, String>  colText;
     @FXML private TableColumn<Row, Number> colCycles;
 
     @FXML private ListView<String> originList;
+
+    @FXML private TextArea labelsArea;
     @FXML private ListView<String> varsList;
 
-    @FXML private TextArea statusArea;
     @FXML private Label pcLabel;
     @FXML private Label cyclesLabel;
     @FXML private Label haltLabel;
 
-    // new fields for this step
     @FXML private ProgressBar loadProgress;
     @FXML private TextField highlightLabelField;
     @FXML private TextField highlightVarField;
@@ -57,14 +57,23 @@ public class MainController {
     @FXML private TableColumn<HistoryRow, Number> hColCycles;
 
     @FXML private TextArea debugSummaryArea;
+    @FXML private TextArea statusArea;
+
+    @FXML private TitledPane historyPane;
+
 
     // ---------- Model ----------
     private Program currentProgram = null;
     private final ObservableList<Row> rows = FXCollections.observableArrayList();
 
-    // simple in-memory history for GUI (degree, inputs, y, cycles)
+    // simple GUI history (degree, inputs, y, cycles)
     private final List<HistoryItem> history = new ArrayList<>();
     private final ObservableList<HistoryRow> historyRows = FXCollections.observableArrayList();
+
+    // ---------- Debugger state ----------
+    private Debugger debugger = null;
+    private volatile boolean debugAutoRun = false; // used by Resume loop
+    private int currentDebugPc = -1;               // for row highlight during debug
 
     // ---------- Init ----------
     @FXML
@@ -89,31 +98,36 @@ public class MainController {
                 int deg = parseIntOrZero(degreeField.getText());
                 Program.Rendered r = currentProgram.expandToDegree(clamp(deg, 0, currentProgram.maxDegree()));
                 List<String> chain = r.originChains.get(idx);
-                originList.setItems(FXCollections.observableArrayList(chain));
+                if (chain == null || chain.isEmpty()) {
+                    originList.setItems(FXCollections.observableArrayList("No origin (basic)."));
+                } else {
+                    originList.setItems(FXCollections.observableArrayList(chain));
+                }
             } catch (Exception ex) {
                 originList.setItems(FXCollections.observableArrayList("No origin"));
             }
         });
 
-        // function selector (not used yet)
-        if (functionCombo != null) {
-            functionCombo.setDisable(true);
-        }
+        // function selector (unused in view mode)
+        if (functionCombo != null) functionCombo.setDisable(true);
 
         // history table
-        if (historyTable != null) {
-            hColRun.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().runNo));
-            hColDegree.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().degree));
-            hColInputs.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().inputs));
-            hColY.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().y));
-            hColCycles.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().cycles));
-            historyTable.setItems(historyRows);
-        }
+        hColRun.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().runNo));
+        hColDegree.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().degree));
+        hColInputs.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().inputs));
+        hColY.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().y));
+        hColCycles.setCellValueFactory(cd -> new SimpleIntegerProperty(cd.getValue().cycles));
+        historyTable.setItems(historyRows);
 
-        appendStatus("Ready.");
+        // initial UI state
+        if (pcLabel != null) pcLabel.setText("-");
+        if (cyclesLabel != null) cyclesLabel.setText("0");
+        if (haltLabel != null) haltLabel.setText("false");
+        if (statusArea != null) statusArea.setText("Ready.\n");
+        if (loadProgress != null) { loadProgress.setVisible(false); loadProgress.setManaged(false); }
     }
 
-    // ---------- Actions ----------
+    // ---------- Actions: Load / Show / Expand / Run / History ----------
 
     @FXML
     private void onLoadXml() {
@@ -130,10 +144,12 @@ public class MainController {
         javafx.concurrent.Task<Void> task = new javafx.concurrent.Task<>() {
             @Override protected Void call() throws Exception {
                 updateProgress(0.1, 1);
-                Thread.sleep(200); // tiny wait to show bar
+                Thread.sleep(200);
 
                 Program p;
                 try {
+                    File xsd = new File("S-Emulator-v2.xsd");
+                    if (xsd.exists()) ProgramParser.validateWithXsd(f, xsd);
                     p = ProgramParser.parseFromXml(f);
                 } catch (Exception ex) {
                     throw new IllegalArgumentException("Failed to load: " + ex.getMessage(), ex);
@@ -143,11 +159,10 @@ public class MainController {
                 String err = ProgramParser.validateLabels(p);
                 if (err != null) throw new IllegalArgumentException(err);
 
-                // Simulate a bit more work (UX)
-                Thread.sleep(900);
+                Thread.sleep(800);
                 final Program program = p;
 
-                javafx.application.Platform.runLater(() -> {
+                Platform.runLater(() -> {
                     currentProgram = program;
                     programNameField.setText(program.name);
                     maxDegreeField.setText(String.valueOf(program.maxDegree()));
@@ -166,17 +181,10 @@ public class MainController {
                     List<String> vnames = vars.stream().map(VariableRef::toString).toList();
                     varsList.setItems(FXCollections.observableArrayList(vnames));
 
-                    // function selector placeholder
-                    if (functionCombo != null) {
-                        functionCombo.getItems().setAll("(all)");
-                        functionCombo.getSelectionModel().selectFirst();
-                        functionCombo.setDisable(false);
-                    }
-
-                    appendStatus("Loaded OK: " + program.name);
+                    appendStatus("Loaded \"" + program.name + "\".");
                 });
 
-                updateProgress(1, 1);
+                updateProgress(1.0, 1);
                 return null;
             }
         };
@@ -189,7 +197,7 @@ public class MainController {
             loadProgress.setVisible(false);
             loadProgress.setManaged(false);
             Throwable ex = task.getException();
-            showError(ex == null ? "Failed to load file" : ex.getMessage());
+            showError(ex == null ? "Unknown error" : ex.getMessage());
         });
 
         loadProgress.progressProperty().bind(task.progressProperty());
@@ -201,8 +209,7 @@ public class MainController {
         clearHighlightsIfAny();
         if (!ensureProgram()) return;
         try {
-            int deg = parseIntOrZero(degreeField.getText());
-            deg = clamp(deg, 0, currentProgram.maxDegree());
+            int deg = clamp(parseIntOrZero(degreeField.getText()), 0, currentProgram.maxDegree());
             Program.Rendered r = currentProgram.expandToDegree(deg);
             rows.setAll(toRows(r));
             appendStatus("Program listed (degree " + deg + ").");
@@ -212,32 +219,33 @@ public class MainController {
     }
 
     @FXML
-    private void onExpand() {
-        clearHighlightsIfAny();
-        onShowProgram();
-    }
+    private void onExpand() { onShowProgram(); }
 
     @FXML
     private void onRun() {
         if (!ensureProgram()) return;
         try {
-            int deg = parseIntOrZero(degreeField.getText());
-            deg = clamp(deg, 0, currentProgram.maxDegree());
+            int deg = clamp(parseIntOrZero(degreeField.getText()), 0, currentProgram.maxDegree());
             List<Integer> inputs = parseInputs(inputsField.getText());
             Runner.RunResult rr = Runner.run(currentProgram, deg, inputs);
 
-            // show the program actually executed (expanded) and vars
+            // refresh table to the rendered we executed
             rows.setAll(toRows(rr.rendered));
-            showVars(rr.variables);
 
+            // show simple live values
+            pcLabel.setText("-");
             cyclesLabel.setText(String.valueOf(rr.cycles));
             haltLabel.setText("true");
-            pcLabel.setText("-");
 
-            history.add(new HistoryItem(history.size()+1, deg, new ArrayList<>(inputs), rr.y, rr.cycles));
-            historyRows.add(new HistoryRow(history.size(), deg, inputs.toString(), rr.y, rr.cycles));
+            // variables box
+            setVariablesBox(rr.variables);
 
-            appendStatus("Run finished. y=" + rr.y + ", cycles=" + rr.cycles);
+            // push to GUI history
+            int runNo = history.size() + 1;
+            history.add(new HistoryItem(runNo, rr.degree, inputs, rr.y, rr.cycles));
+            historyRows.add(new HistoryRow(runNo, rr.degree, inputsToString(inputs), rr.y, rr.cycles));
+
+            appendStatus("Run finished • y = " + rr.y + " • cycles = " + rr.cycles);
         } catch (Exception ex) {
             showError(ex.getMessage());
         }
@@ -245,40 +253,55 @@ public class MainController {
 
     @FXML
     private void onShowHistory() {
-        if (history.isEmpty()) {
-            showInfo("No runs yet.");
-            return;
+        if (historyPane == null) return;
+
+        // Toggle expanded state
+        boolean nowExpanded = !historyPane.isExpanded();
+        historyPane.setExpanded(nowExpanded);
+
+        if (nowExpanded) {
+            // Only when opening: show last run(s)
+            if (!historyRows.isEmpty()) {
+                historyTable.getSelectionModel().selectLast();
+                historyTable.scrollTo(historyRows.size() - 1);
+                appendStatus("Showing " + historyRows.size() + " run(s).");
+            } else {
+                appendStatus("No runs yet.");
+            }
+        } else {
+            appendStatus("History hidden.");
         }
-        StringBuilder sb = new StringBuilder();
-        sb.append("Run# | Degree | Inputs | y | cycles\n");
-        for (HistoryItem h : history) {
-            sb.append(h.runNo).append(" | ")
-                    .append(h.degree).append(" | ")
-                    .append(h.inputs).append(" | ")
-                    .append(h.y).append(" | ")
-                    .append(h.cycles).append('\n');
-        }
-        showInfo(sb.toString());
     }
 
-    // ---------- highlight ----------
+
+
+
+    @FXML
+    private void onRerunSelected() {
+        HistoryRow sel = historyTable.getSelectionModel().getSelectedItem();
+        if (sel == null) {
+            appendStatus("Select a history row first.");
+            return;
+        }
+        degreeField.setText(String.valueOf(sel.degree));
+        inputsField.setText(sel.inputs);
+        onRun();
+    }
+
+    // ---------- Highlighting ----------
+
     @FXML
     private void onHighlightLabel() {
-        String target = (highlightLabelField.getText() == null) ? "" : highlightLabelField.getText().trim();
-        applyRowHighlight((row) -> {
-            String lbl = row.label == null ? "" : row.label.trim();
-            return !target.isEmpty() && lbl.equalsIgnoreCase(target);
-        }, "highlight-label");
+        String want = highlightLabelField.getText();
+        if (want == null || want.isBlank()) return;
+        applyRowHighlight(r -> want.equalsIgnoreCase(r.label), "highlight-label");
     }
 
     @FXML
     private void onHighlightVar() {
-        String target = (highlightVarField.getText() == null) ? "" : highlightVarField.getText().trim().toLowerCase(Locale.ROOT);
-        applyRowHighlight((row) -> {
-            if (target.isEmpty()) return false;
-            String t = " " + row.text.toLowerCase(Locale.ROOT) + " ";
-            return t.contains(" " + target + " ");
-        }, "highlight-var");
+        String want = highlightVarField.getText();
+        if (want == null || want.isBlank()) return;
+        applyRowHighlight(r -> r.text != null && r.text.matches(".*\\b" + want + "\\b.*"), "highlight-var");
     }
 
     @FXML
@@ -292,81 +315,158 @@ public class MainController {
         instructionsTable.setRowFactory(tv -> new TableRow<>() {
             @Override protected void updateItem(Row item, boolean empty) {
                 super.updateItem(item, empty);
-                getStyleClass().removeAll("highlight-label", "highlight-var");
+                getStyleClass().removeAll("highlight-label", "highlight-var", "debug-current");
                 if (!empty && item != null && pred.test(item)) {
                     if (!getStyleClass().contains(styleClass)) getStyleClass().add(styleClass);
+                }
+                if (!empty && getIndex() == currentDebugPc) {
+                    if (!getStyleClass().contains("debug-current")) getStyleClass().add("debug-current");
                 }
             }
         });
     }
 
-    // ---------- Debugger buttons (stubs for now) ----------
-    @FXML private void onStartRegular() { appendStatus("Start Regular (not wired yet)"); }
-    @FXML private void onStartDebug()   { appendStatus("Start Debug (not wired yet)"); }
-    @FXML private void onResume()       { appendStatus("Resume (not wired yet)"); }
-    @FXML private void onStepOver()     { appendStatus("Step Over (not wired yet)"); }
-    @FXML private void onStop()         { appendStatus("Stop (not wired yet)"); }
+    // ---------- Debugger (Start / Step / Resume / Stop) ----------
 
-    // ---------- History table helpers ----------
-    @FXML
-    private void onRerunSelected() {
-        HistoryRow sel = (historyTable == null) ? null : historyTable.getSelectionModel().getSelectedItem();
-        if (sel == null) { showInfo("Pick a run row first."); return; }
-        inputsField.setText(sel.inputs.replaceAll("[\\[\\]]",""));
-        degreeField.setText(String.valueOf(sel.degree));
-        onRun();
+    @FXML private void onStartRegular() {
+        onStartDebug();
+        onResume();
     }
 
-    // ---------- Helpers ----------
+    @FXML private void onStartDebug() {
+        try {
+            if (!ensureProgram()) return;
+            int deg = clamp(parseIntOrZero(degreeField.getText()), 0, currentProgram.maxDegree());
+            List<Integer> inputs = parseInputs(inputsField.getText());
+
+            debugger = new Debugger(currentProgram, deg, inputs);
+
+            // sync table to what we'll step through
+            syncTableToRendered(debugger.rendered());
+
+            Debugger.Snapshot s = debugger.snapshot();
+            refreshDebugUi(s);
+            appendStatus("Debug session started (degree " + deg + ").");
+        } catch (Exception ex) {
+            showError(ex.getMessage());
+            debugger = null;
+            highlightPc(-1);
+        }
+    }
+
+    @FXML private void onStepOver() {
+        if (debugger == null) { appendStatus("Start Debug first."); return; }
+        try {
+            Debugger.Snapshot s = debugger.step();
+            refreshDebugUi(s);
+            if (s.halted) appendStatus("Halted.");
+        } catch (Exception ex) {
+            showError(ex.getMessage());
+            debugger = null;
+            highlightPc(-1);
+        }
+    }
+
+    @FXML private void onResume() {
+        if (debugger == null) { appendStatus("Start Debug first."); return; }
+        if (debugAutoRun) return;
+
+        debugAutoRun = true;
+        Thread t = new Thread(() -> {
+            try {
+                while (debugAutoRun && debugger != null) {
+                    Debugger.Snapshot s = debugger.step();
+                    Platform.runLater(() -> refreshDebugUi(s));
+                    if (s.halted) {
+                        debugAutoRun = false;
+                        Platform.runLater(() -> appendStatus("Halted."));
+                        break;
+                    }
+                    try { Thread.sleep(120); } catch (InterruptedException ignore) {}
+                }
+            } catch (Exception ex) {
+                debugAutoRun = false;
+                Platform.runLater(() -> showError(ex.getMessage()));
+            }
+        }, "debug-resume");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    @FXML private void onStop() {
+        debugAutoRun = false;
+        debugger = null;
+        highlightPc(-1);
+        appendStatus("Debug session stopped.");
+    }
+
+    // ---------- Helpers used by debugger ----------
+
+    private void highlightPc(int pc) {
+        currentDebugPc = pc;
+        instructionsTable.setRowFactory(tv -> new TableRow<Row>() {
+            @Override protected void updateItem(Row item, boolean empty) {
+                super.updateItem(item, empty);
+                getStyleClass().removeAll("debug-current", "highlight-label", "highlight-var");
+                if (!empty && getIndex() == currentDebugPc) {
+                    if (!getStyleClass().contains("debug-current")) getStyleClass().add("debug-current");
+                }
+            }
+        });
+        if (pc >= 0) {
+            instructionsTable.getSelectionModel().select(pc);
+            instructionsTable.scrollTo(Math.max(pc - 3, 0));
+        } else {
+            instructionsTable.getSelectionModel().clearSelection();
+        }
+    }
+
+    private void refreshDebugUi(Debugger.Snapshot s) {
+        if (pcLabel != null)     pcLabel.setText(s.pc < 0 ? "-" : String.valueOf(s.pc + 1));
+        if (cyclesLabel != null) cyclesLabel.setText(String.valueOf(s.cycles));
+        if (haltLabel != null)   haltLabel.setText(String.valueOf(s.halted));
+        setVariablesBox(s.vars);
+        if (debugSummaryArea != null && !s.changed.isEmpty()) {
+            String msg = s.changed.entrySet().stream()
+                    .map(e -> e.getKey() + "=" + e.getValue())
+                    .collect(Collectors.joining(", "));
+            debugSummaryArea.appendText("Changed: " + msg + "\n");
+        }
+        highlightPc(s.pc);
+    }
+
+    private void syncTableToRendered(Program.Rendered r) {
+        rows.setAll(toRows(r));
+    }
+
+    // ---------- Utilities ----------
+
     private boolean ensureProgram() {
-        if (currentProgram == null) {
-            showError("Load XML first (File → Load XML).");
-            return false;
-        }
-        return true;
+        if (currentProgram != null) return true;
+        showError("No program loaded.");
+        return false;
     }
 
-    private String joinLabels(Program p) {
-        List<String> labels = new ArrayList<>(p.labelsUsed());
-        boolean hasExit = labels.removeIf(s -> s.equalsIgnoreCase("EXIT"));
-        labels.sort(Comparator.comparing(this::labelSortKey));
-        if (hasExit) labels.add("EXIT");
-        return String.join(", ", labels);
-    }
-
-    private int labelSortKey(String s) {
-        if (s == null) return Integer.MAX_VALUE;
-        String u = s.toUpperCase(Locale.ROOT);
-        if (u.startsWith("L")) {
-            try { return Integer.parseInt(u.substring(1)); } catch (Exception ignored) {}
-        }
-        return Integer.MAX_VALUE - 1;
+    private void showError(String msg) {
+        appendStatus("Error: " + msg);
+        new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK).showAndWait();
     }
 
     private List<Row> toRows(Program.Rendered r) {
-        List<Row> list = new ArrayList<>();
-        for (int i=0; i<r.lines.size(); i++) {
-            String line = r.lines.get(i);
-
-            String type = (line.contains("(B)")) ? "B" : (line.contains("(S)")) ? "S" : "?";
-
-            String label = "     ";
-            int lb = line.indexOf('['), rb = line.indexOf(']');
-            if (lb >=0 && rb>lb) label = line.substring(lb+1, rb).trim();
-
-            int lp = line.lastIndexOf('('), rp = line.lastIndexOf(')');
-            int cyc = (lp>=0 && rp>lp) ? safeInt(line.substring(lp+1, rp).trim()) : 1;
-
-            String text = line;
-            if (rb>=0 && lp>rb) text = line.substring(rb+1, lp).trim();
-
-            list.add(new Row(i+1, type, label, text, cyc));
+        List<Row> out = new ArrayList<>();
+        for (int i = 0; i < r.list.size(); i++) {
+            Instruction inst = r.list.get(i);
+            String type = inst.basic ? "B" : "S";
+            out.add(new Row(i + 1, type, inst.label == null ? "" : inst.label, inst.text, inst.cycles()));
         }
-        return list;
+        return out;
     }
 
-    private void showVars(Map<String,Integer> map) {
-        List<String> xs = new ArrayList<>(), zs = new ArrayList<>();
+    private String joinLabels(Program p) { return String.join(", ", p.labelsUsed()); }
+
+    private void setVariablesBox(LinkedHashMap<String,Integer> map) {
+        List<String> xs = new ArrayList<>();
+        List<String> zs = new ArrayList<>();
         for (String k : map.keySet()) {
             if (k.equals("y")) continue;
             if (k.startsWith("x")) xs.add(k);
@@ -388,8 +488,13 @@ public class MainController {
                 .map(String::trim)
                 .filter(t -> !t.isEmpty())
                 .map(this::safeInt)
-                .map(v -> Math.max(0, v)) // S-lang is naturals only
+                .map(v -> Math.max(0, v))
                 .collect(Collectors.toList());
+    }
+
+    private String inputsToString(List<Integer> xs) {
+        if (xs == null || xs.isEmpty()) return "";
+        return xs.stream().map(String::valueOf).collect(Collectors.joining(", "));
     }
 
     private int parseIntOrZero(String s) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return 0; } }
@@ -400,18 +505,18 @@ public class MainController {
         onClearHighlight();
         if (highlightLabelField != null) highlightLabelField.clear();
         if (highlightVarField != null)   highlightVarField.clear();
+        highlightPc(-1);
     }
 
     private void appendStatus(String msg) { statusArea.appendText(msg + "\n"); }
-    private void showError(String msg) {
-        appendStatus("ERROR: " + msg);
-        new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK).showAndWait();
-    }
-    private void showInfo(String msg) { new Alert(Alert.AlertType.INFORMATION, msg, ButtonType.OK).showAndWait(); }
 
-    // ---------- table row + history models ----------
+    // ---------- Small view models ----------
     public static final class Row {
-        final int num; final String type; final String label; final String text; final int cycles;
+        final int num;
+        final String type;
+        final String label;
+        final String text;
+        final int cycles;
         Row(int num, String type, String label, String text, int cycles) {
             this.num=num; this.type=type; this.label=label; this.text=text; this.cycles=cycles;
         }
