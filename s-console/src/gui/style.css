@@ -31,7 +31,7 @@
     -fx-font-family: Consolas, "Courier New", monospace;
     -fx-font-size: 12px;
 }
-/* highlight the current instruction during debugging */
+/* highlight the current instruction during debugging ratatata*/
 .table-row-cell.debug-current {
     -fx-background-color: rgba(255, 215, 0, 0.35);
 }
