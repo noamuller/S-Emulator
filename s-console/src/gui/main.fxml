@@ -154,6 +154,26 @@
                 </TitledPane>
 
 
+                <!-- Errors (toggle pane) -->
+                <TitledPane fx:id="errorsPane" text="Errors" expanded="false">
+                    <VBox spacing="6">
+                        <padding><Insets top="10" right="10" bottom="10" left="10"/></padding>
+
+                        <TableView fx:id="errorsTable" prefHeight="140">
+                            <columns>
+                                <TableColumn fx:id="eColWhen"  text="When"   prefWidth="90"/>
+                                <TableColumn fx:id="eColWhat"  text="Message" prefWidth="320"/>
+                            </columns>
+                            <placeholder><Label text="No errors"/></placeholder>
+                        </TableView>
+
+                        <HBox spacing="8">
+                            <Button text="Clear errors" onAction="#onClearErrors"/>
+                        </HBox>
+                    </VBox>
+                </TitledPane>
+
+
                 <!-- Status -->
                 <VBox spacing="6" VBox.vgrow="ALWAYS">
                     <Label text="Status:"/>
