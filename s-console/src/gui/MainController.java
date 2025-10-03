@@ -11,32 +11,28 @@ import javafx.stage.Window;
 import sengine.*;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * GUI controller for תרגיל 2 – S-Emulator.
- * Compatible with your current engine (no reliance on hidden fields/methods).
- * Includes a persistent Errors pane (toggleable).
+ * This version matches the fx:id and widget types in your main.fxml.
  */
 public class MainController {
 
     // -------------------------
-    // Top bar
+    // Top bar (matches FXML ids)
     // -------------------------
-    @FXML private TextField programField;          // shows program name
-    @FXML private ComboBox<String> functionCombo;  // (unused for now)
-    @FXML private TextField degreeField;           // chosen degree
-    @FXML private TextField degreeMaxField;        // read-only max degree
+    @FXML private TextField programNameField;  // was programField
+    @FXML private ComboBox<String> functionCombo;
+    @FXML private TextField degreeField;
+    @FXML private TextField maxDegreeField;   // was degreeMaxField
 
     // -------------------------
     // Center: instructions table
     // -------------------------
     @FXML private TableView<Instruction> instructionsTable;
-    @FXML private TableColumn<Instruction, String> colIdx;
-    @FXML private TableColumn<Instruction, String> colBS;
+    @FXML private TableColumn<Instruction, String> colNum;    // was colIdx
+    @FXML private TableColumn<Instruction, String> colType;   // was colBS
     @FXML private TableColumn<Instruction, String> colLabel;
     @FXML private TableColumn<Instruction, String> colText;
     @FXML private TableColumn<Instruction, String> colCycles;
@@ -45,28 +41,26 @@ public class MainController {
     @FXML private ListView<String> originList;
 
     // -------------------------
-    // Right: Program facts (labels / variables referenced)
+    // Right: Program facts
     // -------------------------
-    @FXML private ListView<String> labelsList;
-    @FXML private ListView<String> varsList;
+    @FXML private TextArea labelsArea;              // was labelsList (ListView)
+    @FXML private ListView<String> varsList;        // unchanged
 
     // -------------------------
-    // Right: Run box
+    // Right: Run
     // -------------------------
     @FXML private TextField inputsField;
-
-    // Optional live labels – we keep them but don’t rely on engine internals
     @FXML private Label pcLabel;
     @FXML private Label cyclesLabel;
     @FXML private Label haltLabel;
 
     // -------------------------
-    // Debug (stubs)
+    // Debug buttons (stubs)
     // -------------------------
     @FXML private Button btnStartDebug, btnStep, btnResume, btnStop;
 
     // -------------------------
-    // History (toggleable)
+    // History
     // -------------------------
     @FXML private TitledPane historyPane;
     @FXML private TableView<HistoryRow> historyTable;
@@ -76,22 +70,19 @@ public class MainController {
     @FXML private TableColumn<HistoryRow, String> hColY;
     @FXML private TableColumn<HistoryRow, String> hColCycles;
 
-    private final ObservableList<HistoryRow> historyRows =
-            FXCollections.observableArrayList();
+    private final ObservableList<HistoryRow> historyRows = FXCollections.observableArrayList();
 
     // -------------------------
-    // Errors pane (toggleable)
+    // Errors
     // -------------------------
     @FXML private TitledPane errorsPane;
     @FXML private TableView<ErrorRow> errorsTable;
     @FXML private TableColumn<ErrorRow, String> eColWhen;
     @FXML private TableColumn<ErrorRow, String> eColWhat;
-
-    private final ObservableList<ErrorRow> errorRows =
-            FXCollections.observableArrayList();
+    private final ObservableList<ErrorRow> errorRows = FXCollections.observableArrayList();
 
     // -------------------------
-    // Status box
+    // Status
     // -------------------------
     @FXML private TextArea statusArea;
 
@@ -106,20 +97,19 @@ public class MainController {
     // ======================================================
     @FXML
     private void initialize() {
-        if (programField != null) programField.setEditable(false);
-        if (degreeMaxField != null) degreeMaxField.setEditable(false);
-        if (functionCombo != null) functionCombo.setDisable(true);
+        if (programNameField != null) programNameField.setEditable(false);
+        if (maxDegreeField != null)   maxDegreeField.setEditable(false);
+        if (functionCombo != null)    functionCombo.setDisable(true);
 
-        // Instructions columns
+        // Table columns
         if (instructionsTable != null) {
-            if (colIdx != null) {
-                colIdx.setCellValueFactory(cd ->
+            if (colNum != null) {
+                colNum.setCellValueFactory(cd ->
                         new SimpleStringProperty(Integer.toString(
                                 instructionsTable.getItems().indexOf(cd.getValue()) + 1)));
             }
-            if (colBS != null) {
-                // Heuristic: QUOTE… considered S, otherwise B
-                colBS.setCellValueFactory(cd ->
+            if (colType != null) {
+                colType.setCellValueFactory(cd ->
                         new SimpleStringProperty(isSynthetic(cd.getValue()) ? "S" : "B"));
             }
             if (colLabel != null) {
@@ -131,12 +121,11 @@ public class MainController {
                         new SimpleStringProperty(cd.getValue().text));
             }
             if (colCycles != null) {
-                // We don’t depend on Instruction.cycles (not public in your engine).
                 colCycles.setCellValueFactory(cd ->
                         new SimpleStringProperty(guessCycles(cd.getValue())));
             }
 
-            // Selection -> origin chain
+            // selection → origin chain
             instructionsTable.getSelectionModel().selectedIndexProperty().addListener((obs, oldI, newI) -> {
                 if (newI == null || newI.intValue() < 0 || currentProgram == null) {
                     if (originList != null) originList.setItems(FXCollections.observableArrayList());
@@ -156,7 +145,7 @@ public class MainController {
             });
         }
 
-        // History table wiring
+        // History table
         if (historyTable != null) historyTable.setItems(historyRows);
         if (hColRun != null)    hColRun.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().runNo)));
         if (hColDegree != null) hColDegree.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().degree)));
@@ -164,7 +153,7 @@ public class MainController {
         if (hColY != null)      hColY.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().y)));
         if (hColCycles != null) hColCycles.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().cycles)));
 
-        // Errors table wiring
+        // Errors table
         if (errorsTable != null) errorsTable.setItems(errorRows);
         if (eColWhen != null) eColWhen.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().when));
         if (eColWhat != null) eColWhat.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().what));
@@ -192,12 +181,12 @@ public class MainController {
             currentProgram = p;
             lastGoodProgram = p;
 
-            if (programField != null) programField.setText(p.name);
-            if (degreeMaxField != null) degreeMaxField.setText(Integer.toString(p.maxDegree()));
-            if (degreeField != null) degreeField.setText("0");
+            if (programNameField != null) programNameField.setText(p.name);
+            if (maxDegreeField != null)    maxDegreeField.setText(Integer.toString(p.maxDegree()));
+            if (degreeField != null)       degreeField.setText("0");
 
-            listProgram();               // shows degree 0
-            setFactsBox(p);              // fills facts pane (best-effort)
+            listProgram();    // degree 0
+            setFactsBox(p);   // best-effort facts
 
             appendStatus("Loaded \"" + p.name + "\".");
         } catch (Exception ex) {
@@ -214,44 +203,49 @@ public class MainController {
 
     @FXML
     private void onRun() {
-        if (currentProgram == null) {
-            showError("Load a program first.");
-            return;
-        }
+        if (currentProgram == null) { showError("Load a program first."); return; }
+
+        // 1) Parse inputs from the text field (or empty string)
+        List<Integer> inputs = parseInputs(inputsField == null ? "" : inputsField.getText());
 
         try {
-            // parse + clamp inputs/degree
-            List<Integer> inputs = parseInputs(inputsField == null ? "" : inputsField.getText());
-            int degRaw = parseIntOrZero(degreeField == null ? "" : degreeField.getText());
-            int deg = clamp(degRaw, 0, currentProgram.maxDegree());
+            // 2) Degree: parse -> clamp -> RUN (pass Program + degree to Runner)
+            int deg = parseIntoZero(degreeField == null ? "" : degreeField.getText());
+            deg = clamp(deg, 0, currentProgram.maxDegree());
 
-            // run (Runner.run expands internally)
+            // IMPORTANT: call the Runner signature that expects (Program, int, List<Integer>)
             Runner.RunResult rr = Runner.run(currentProgram, deg, inputs);
 
-            setVariablesBox(rr.variables);
+            // 3) Optional live labels — set only what we surely know
+            if (cyclesLabel != null) {
+                // We haven't wired cycles from the engine yet; leave blank for now.
+                cyclesLabel.setText("");
+            }
+            if (pcLabel != null) pcLabel.setText("*");          // placeholder for PC if you track it later
+            if (haltLabel != null) haltLabel.setText("true");   // program fully ran if we got here
 
-
-            // simple live values
-            if (cyclesLabel != null) cyclesLabel.setText(Integer.toString(rr.cycles));
-            if (pcLabel != null)     pcLabel.setText("-");        // PC not exposed by engine (yet)
-            if (haltLabel != null)   haltLabel.setText("true");   // program completed
-
-            // push to UI history
+            // 4) Push to UI history (store -1 until cycles is exposed from the engine)
             int runNo = historyRows.size() + 1;
-            historyRows.add(new HistoryRow(runNo, deg, inputsToString(inputs), rr.y, rr.cycles));
+            historyRows.add(new HistoryRow(runNo, deg, inputsToString(inputs), rr.y, -1));
 
-            appendStatus("Run finished • y = " + rr.y + " • cycles = " + rr.cycles);
+            // 5) Status line
+            appendStatus("Run finished • y = " + rr.y);
+
         } catch (Exception ex) {
             showError(ex.getMessage());
         }
     }
-    // Show current variable values in the Program facts → "Variables referenced" list
-    private void setVariablesBox(java.util.Map<String, Integer> vars) {
-        if (varsList == null || vars == null) return;
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        vars.forEach((k, v) -> lines.add(k + " = " + v));
-        lines.sort(String::compareTo);
-        varsList.setItems(javafx.collections.FXCollections.observableArrayList(lines));
+
+    // Parses an integer; if blank/invalid, returns 0.
+    private static int parseIntoZero(String s) {
+        if (s == null) return 0;
+        try {
+            String t = s.trim();
+            if (t.isEmpty()) return 0;
+            return Integer.parseInt(t);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
 
@@ -283,13 +277,14 @@ public class MainController {
         onRun();
     }
 
-    // Debug stubs
-    @FXML private void onStartDebug() { appendStatus("Debug: start (stub)."); }
-    @FXML private void onStep()       { appendStatus("Debug: step (stub)."); }
-    @FXML private void onResume()     { appendStatus("Debug: resume (stub)."); }
-    @FXML private void onStop()       { appendStatus("Debug: stop (stub)."); }
+    // --- Debugger • Execution handlers (stubs) ---
+    @FXML private void onStartRegular(ActionEvent e) { onRun(); }
+    @FXML private void onStartDebug(ActionEvent e)   { appendStatus("Debug: start (stub)."); }
+    @FXML private void onResume(ActionEvent e)       { appendStatus("Debug: resume (stub)."); }
+    @FXML private void onStepOver(ActionEvent e)     { appendStatus("Debug: step over (stub)."); }
+    @FXML private void onStop(ActionEvent e)         { appendStatus("Debug: stop (stub)."); }
 
-    // Errors pane
+    // Errors
     @FXML
     private void onClearErrors() {
         errorRows.clear();
@@ -309,9 +304,9 @@ public class MainController {
                 instructionsTable.setItems(FXCollections.observableArrayList(r.list));
                 instructionsTable.getSelectionModel().clearSelection();
             }
-            if (degreeMaxField != null) degreeMaxField.setText(Integer.toString(currentProgram.maxDegree()));
+            if (maxDegreeField != null) maxDegreeField.setText(Integer.toString(currentProgram.maxDegree()));
 
-            setFactsBox(currentProgram);  // recompute facts quickly
+            setFactsBox(currentProgram);
 
             appendStatus("Program listed (degree " + deg + ").");
         } catch (Exception ex) {
@@ -322,24 +317,21 @@ public class MainController {
     private void setFactsBox(Program p) {
         if (p == null) return;
         try {
-            // Best-effort facts from the degree-0 listing
             Program.Rendered r0 = p.expandToDegree(0);
 
-            // Labels used
-            if (labelsList != null) {
-                Set<String> labels = new HashSet<>();
+            // Labels used → labelsArea (TextArea)
+            if (labelsArea != null) {
+                Set<String> labels = new TreeSet<>();
                 for (Instruction ins : r0.list) {
                     if (ins.label != null && !ins.label.isBlank()) labels.add(ins.label);
                 }
-                labelsList.setItems(FXCollections.observableArrayList(labels));
+                labelsArea.setText(String.join(", ", labels));
             }
 
-            // Variables referenced: quick parse
+            // Variables referenced (names only) → varsList
             if (varsList != null) {
-                Set<String> vars = new HashSet<>();
-                for (Instruction ins : r0.list) {
-                    extractVars(ins.text, vars);
-                }
+                Set<String> vars = new TreeSet<>();
+                for (Instruction ins : r0.list) extractVars(ins.text, vars);
                 varsList.setItems(FXCollections.observableArrayList(vars));
             }
         } catch (Exception ex) {
@@ -347,26 +339,28 @@ public class MainController {
         }
     }
 
-    // very light variable extractor to populate "Program facts"
+    private void setVariablesBox(Map<String, Integer> vars) {
+        if (varsList == null || vars == null) return;
+        List<String> lines = new ArrayList<>();
+        vars.forEach((k, v) -> lines.add(k + " = " + v));
+        lines.sort(String::compareTo);
+        varsList.setItems(FXCollections.observableArrayList(lines));
+    }
+
     private void extractVars(String text, Set<String> out) {
         if (text == null) return;
         String[] toks = text.replaceAll("[^A-Za-z0-9_]", " ").split("\\s+");
-        for (String t : toks) {
-            if (t.matches("y|x\\d+|z\\d+")) out.add(t);
-        }
+        for (String t : toks) if (t.matches("y|x\\d+|z\\d+")) out.add(t);
     }
 
     private static boolean isSynthetic(Instruction ins) {
         if (ins == null || ins.text == null) return false;
-        String t = ins.text.trim().toUpperCase();
-        return t.startsWith("QUOTE"); // synthetic displayed as S in this exercise
+        return ins.text.trim().toUpperCase().startsWith("QUOTE");
     }
 
     private static String guessCycles(Instruction ins) {
         if (ins == null || ins.text == null) return "";
-        String t = ins.text.trim().toUpperCase();
-        // if-branches usually take 2 in this exercise set; assignments 1
-        return t.startsWith("IF ") ? "2" : "1";
+        return ins.text.trim().toUpperCase().startsWith("IF ") ? "2" : "1";
     }
 
     private static int clamp(int v, int lo, int hi) {
@@ -427,48 +421,20 @@ public class MainController {
         a.setHeaderText("Error");
         a.showAndWait();
     }
-// --- Debugger • Execution button handlers from FXML ---
-
-    @FXML
-    private void onStartRegular(javafx.event.ActionEvent e) {
-        // Run the program once in "regular" mode
-        onRun();
-    }
-
-    // If your FXML uses these names, keep them; otherwise they are harmless.
-    @FXML
-    private void onStepOver(javafx.event.ActionEvent e) {
-        appendStatus("Debug: step over (stub).");
-    }
-
-    @FXML
-    private void onResume(javafx.event.ActionEvent e) {
-        appendStatus("Debug: resume (stub).");
-    }
-
-    @FXML
-    private void onStop(javafx.event.ActionEvent e) {
-        appendStatus("Debug: stop (stub).");
-    }
-
 
     // ======================================================
     // Row models
     // ======================================================
     public static final class HistoryRow {
-        public final int runNo;
-        public final int degree;
+        public final int runNo, degree, y, cycles;
         public final String inputsCsv;
-        public final int y;
-        public final int cycles;
         public HistoryRow(int runNo, int degree, String inputsCsv, int y, int cycles) {
             this.runNo = runNo; this.degree = degree; this.inputsCsv = inputsCsv; this.y = y; this.cycles = cycles;
         }
     }
 
     private static final class ErrorRow {
-        final String when;
-        final String what;
+        final String when, what;
         ErrorRow(String when, String what) { this.when = when; this.what = what; }
     }
 }
