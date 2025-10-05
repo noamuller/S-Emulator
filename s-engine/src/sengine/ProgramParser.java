@@ -97,6 +97,8 @@ public final class ProgramParser {
         Element sInstrWrap = firstChild(root, "S-Instructions");
         if (sInstrWrap == null) throw new IllegalArgumentException("Missing <S-Instructions>");
 
+        java.util.Set<String> definedFnNames = collectFunctionNames(root);
+
         List<Instruction> out = new ArrayList<>();
 
         for (Element e : children(sInstrWrap, "S-Instruction")) {
@@ -132,13 +134,20 @@ public final class ProgramParser {
                 if (fnName == null || fnName.isBlank())
                     throw new IllegalArgumentException("QUOTE: missing functionName");
 
-                // If functionArguments exist → create a SYNTHETIC "QUOTE dst <- Func(args)" line.
-                // Program.expandToDegree(1) will inline it via RX_QUOTE.
+                // If functionArguments exist → normalize, validate names, create synthetic QUOTE
+                // If functionArguments exist → normalize, validate names, keep as synthetic S-instruction.
+// Program.expandToDegree(1) will inline it later.
                 if (fnArgs != null && !fnArgs.isBlank()) {
-                    String text = "QUOTE " + dst + " <- " + fnName + "(" + fnArgs.trim() + ")";
+                    forbidOuterWrappingOfMultiArgs(fnArgs);               // keep this guard
+                    String argsNorm = normalizeFunctionArguments(fnArgs); // canonicalize
+                    verifyFunctionsExist(definedFnNames, topLevelFunctionNames(argsNorm));
+
+                    String text = "QUOTE " + dst + " <- " + fnName + "(" + argsNorm + ")";
                     out.add(Instruction.parseFromText(label, text, "S", null));
                     continue;
                 }
+
+
 
                 // Otherwise fall back to the old constant-function behavior
                 Integer constVal = tryResolveConstFunction(root, fnName);
@@ -147,6 +156,8 @@ public final class ProgramParser {
                 out.add(Instruction.parseFromText(label, dst + " <- " + constVal, "B", 1));
                 continue;
             }
+
+
 
             // ----- ASSIGNMENT (synthetic): <S-Variable>y</S-Variable>, arg assignedVariable="x1"
             if (eq(type, "ASSIGNMENT")) {
@@ -267,7 +278,222 @@ public final class ProgramParser {
     // ------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------
+    /** Reject ONLY the bad shape: a SINGLE outer pair of parentheses wrapping
+     *  MULTIPLE top-level arguments (e.g., "((CONST7),(Successor,x1))").
+     *  Allow the single-call encoding "(Name,arg1,...)" used by the course XML.
+     *  Also allow "(Const7)" (zero-arg function) and "(Const7),(Successor,x1)" (no outer wrap).
+     */
+    private static void forbidOuterWrappingOfMultiArgs(String raw) {
+        if (raw == null) throw new IllegalArgumentException("QUOTE: missing functionArguments");
+        String s = raw.trim();
+        if (s.length() < 2 || s.charAt(0) != '(' || s.charAt(s.length() - 1) != ')') {
+            // No single outer wrapper → fine.
+            return;
+        }
+
+        // Does the very first '(' stay open until the last ')'? If not, no single outer wrapper.
+        int depth = 0;
+        boolean firstWrapsAll = true;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            if (depth == 0 && i < s.length() - 1) { // closed before end → not one big outer pair
+                firstWrapsAll = false;
+                break;
+            }
+        }
+        if (!firstWrapsAll) return; // e.g. "(Const7),(Successor,x1)" → allowed
+
+        // Single outer wrapper: inspect inner at top level.
+        String inner = s.substring(1, s.length() - 1).trim();
+
+        // Split inner by top-level commas.
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        StringBuilder tok = new StringBuilder();
+        depth = 0;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            if (c == ',' && depth == 0) {
+                parts.add(tok.toString().trim());
+                tok.setLength(0);
+            } else {
+                tok.append(c);
+            }
+        }
+        parts.add(tok.toString().trim());
+
+        // Allowed cases with a single outer wrapper:
+        //  - exactly 1 part: "(Const7)" → ok
+        //  - exactly 2 parts AND first is an identifier: "(Successor,x1)" → single-call encoding → ok
+        if (parts.size() == 1) return;
+        if (parts.size() == 2 && parts.get(0).matches("[A-Za-z_][A-Za-z0-9_]*")) return;
+
+        // Otherwise it's multiple top-level args wrapped by one outer pair → reject.
+        throw new IllegalArgumentException("QUOTE: invalid functionArguments; remove the outer parentheses");
+    }
+
+
+
+    /** Collect function names exactly as written in <S-Functions>. (Case-SENSITIVE set) */
+    private static java.util.Set<String> collectFunctionNames(Element root) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        Element functions = firstChild(root, "S-Functions");
+        if (functions == null) return out;
+        for (Element sf : children(functions, "S-Function")) {
+            String name = attrOr(sf, "name", "");
+            if (name != null && !name.isBlank()) out.add(name.trim());
+        }
+        return out;
+    }
+
+    /** Extract top-level function names from a canonical arg list like "Const7(), Successor(x1)". */
+    private static java.util.List<String> topLevelFunctionNames(String argsNorm) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        String s = argsNorm;
+        int depth = 0;
+        StringBuilder cur = new StringBuilder();
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+            if (c == ',' && depth == 0) {
+                parts.add(cur.toString().trim());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
+        }
+        parts.add(cur.toString().trim());
+        for (String p : parts) {
+            // accept only call form Name(...)
+            int idx = p.indexOf('(');
+            if (idx <= 0 || !p.endsWith(")")) continue;
+            String name = p.substring(0, idx).trim();
+            if (!name.isEmpty()) names.add(name);
+        }
+        return names;
+    }
+
+    /** Verify every function name referenced in args exists EXACTLY (case-sensitive) in <S-Functions>. */
+    private static void verifyFunctionsExist(java.util.Set<String> defined, java.util.List<String> names) {
+        for (String n : names) {
+            if (!defined.contains(n)) {
+                throw new IllegalArgumentException("Unknown function: " + n);
+            }
+        }
+    }
+
+    /** If s is Successor(Successor(...(x1)...)), return how many Successor layers; otherwise -1. */
+    // Return count of nested Successor(...) over x1, or -1 if pattern doesn't match.
+    private static int successorDepthOverX1(String rhs) {
+        if (rhs == null) return -1;
+        String t = rhs.trim();
+        final String KW = "successor(";
+        int count = 0;
+        while (t.toLowerCase(java.util.Locale.ROOT).startsWith(KW) && t.endsWith(")")) {
+            count++;
+            t = t.substring(KW.length(), t.length() - 1).trim();
+        }
+        return t.equalsIgnoreCase("x1") ? count : -1;
+    }
+    // If this is S: "QUOTE <dst> <- Successor(Successor(...(x1)...))", expand to B steps.
+// Returns null if not applicable.
+    private java.util.List<Instruction> tryExpandSelfSuccessorQuote(Instruction ins) {
+        if (ins == null || ins.text == null) return null;
+        String t = ins.text.trim();
+        if (!t.toUpperCase(java.util.Locale.ROOT).startsWith("QUOTE ")) return null;
+
+        int arrow = t.indexOf("<-");
+        if (arrow < 0) return null;
+        String dst = t.substring("QUOTE".length(), arrow).trim(); // between QUOTE and <-
+        if (dst.isEmpty()) return null;
+
+        String rhs = t.substring(arrow + 2).trim(); // right-hand side
+        int depth = successorDepthOverX1(rhs);
+        if (depth < 1) return null;
+
+        java.util.List<Instruction> out = new java.util.ArrayList<>();
+        // y <- x1
+        out.add(Instruction.parseFromText(ins.label, dst + " <- x1", "B", 1));
+        // y <- y + 1  (repeat depth times)
+        for (int i = 0; i < depth; i++) {
+            out.add(Instruction.parseFromText(null, dst + " <- " + dst + " + 1", "B", 1));
+        }
+        return out;
+    }
+
+
+    /** Build a basic assignment like "v <- v + 1" (1 cycle). */
+    private static Instruction inc(String var) {
+        return Instruction.parseFromText(null, var + " <- " + var + " + 1", "B", 1);
+    }
+
+
     private static boolean eq(String a, String b) { return a != null && a.equalsIgnoreCase(b); }
+    /** Normalize functionArguments strings from XML into canonical call syntax.
+     *  Examples:
+     *    "(Const7)"              -> "Const7()"
+     *    "(Successor,x1)"        -> "Successor(x1)"
+     *    "(Const7),(Successor,x1)" -> "Const7(), Successor(x1)"
+     */
+    private static String normalizeFunctionArguments(String raw) {
+        if (raw == null) throw new IllegalArgumentException("QUOTE: missing functionArguments");
+        String s = raw.trim();
+        // Split by top-level commas (ignore commas inside parentheses)
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        StringBuilder tok = new StringBuilder();
+        int depth = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+            if (c == ',' && depth == 0) { // top-level comma
+                parts.add(tok.toString().trim());
+                tok.setLength(0);
+            } else {
+                tok.append(c);
+            }
+        }
+        parts.add(tok.toString().trim());
+
+        java.util.List<String> norm = new java.util.ArrayList<>();
+        for (String p : parts) {
+            if (p.isEmpty()) throw new IllegalArgumentException("QUOTE: empty argument in functionArguments");
+
+            String t = p.trim();
+
+            // Case A: "(Name,arg1,...)"  -> "Name(arg1,...)"
+            if (t.startsWith("(") && t.endsWith(")")) {
+                String inner = t.substring(1, t.length() - 1).trim();
+                int firstComma = -1;
+                int d = 0;
+                for (int i = 0; i < inner.length(); i++) {
+                    char c = inner.charAt(i);
+                    if (c == '(') d++;
+                    else if (c == ')') d--;
+                    else if (c == ',' && d == 0) { firstComma = i; break; }
+                }
+                if (firstComma >= 0) {
+                    String fname = inner.substring(0, firstComma).trim();
+                    String args  = inner.substring(firstComma + 1).trim();
+                    if (fname.isEmpty()) throw new IllegalArgumentException("QUOTE: missing function name in '" + t + "'");
+                    t = fname + "(" + args + ")";
+                } else {
+                    // Case B: "(Const7)" -> "Const7()"
+                    String fname = inner.trim();
+                    if (fname.isEmpty()) throw new IllegalArgumentException("QUOTE: empty function name in '" + t + "'");
+                    t = fname + "()";
+                }
+            }
+            // else: already canonical (e.g., "Foo(x1)" or "Bar()")
+            norm.add(t);
+        }
+        return String.join(", ", norm);
+    }
 
     private static String parseGotoTarget(String text) {
         if (text == null) return null;
@@ -287,6 +513,66 @@ public final class ProgramParser {
         String v = el.getAttribute(name);
         return (v == null || v.isBlank()) ? dft : v;
     }
+
+    /** Validate the shape of functionArguments for QUOTE/JEF: must be a single tuple like (arg1,arg2,...).
+     *  Disallow wrapped bare groups like ((CONST7),(Successor,x1)) and bare-parenthesized constants "(CONST7)".
+     */
+    private static void validateFunctionArgumentsFormat(String fnArgs) {
+        if (fnArgs == null) {
+            throw new IllegalArgumentException("QUOTE: missing functionArguments");
+        }
+        String s = fnArgs.trim();
+        if (!s.startsWith("(") || !s.endsWith(")")) {
+            throw new IllegalArgumentException("QUOTE: functionArguments must be a single tuple like (a,b)");
+        }
+
+        // inner text without the outer parentheses
+        String inner = s.substring(1, s.length() - 1).trim();
+
+        // quick rejection: multiple top-level groups like ")(" indicate bad nesting e.g. ((CONST7),(Successor,x1))
+        // (this also catches stray extra parentheses between comma-separated items)
+        int depth = 0;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth < 0) {
+                throw new IllegalArgumentException("QUOTE: invalid functionArguments (parentheses mismatch)");
+            }
+        }
+        // Split args by commas at top level (no split inside nested parentheses)
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        StringBuilder tok = new StringBuilder();
+        depth = 0;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+            if (c == ',' && depth == 0) {
+                parts.add(tok.toString().trim());
+                tok.setLength(0);
+            } else {
+                tok.append(c);
+            }
+        }
+        parts.add(tok.toString().trim());
+
+        // Each top-level argument must be either:
+        //  - a simple token (y, x1, z3, CONST7), WITHOUT extra wrapping parentheses, OR
+        //  - a function call form: Name(...)
+        for (String p : parts) {
+            if (p.isEmpty()) {
+                throw new IllegalArgumentException("QUOTE: empty argument in functionArguments");
+            }
+            boolean looksLikeCall = p.matches("[A-Za-z_][A-Za-z0-9_]*\\(.*\\)");
+            boolean hasBareParens = p.startsWith("(") && !looksLikeCall;
+            if (hasBareParens) {
+                // e.g. "(CONST7)" or "(x1)" or "(Successor,x1)" – invalid wrapping
+                throw new IllegalArgumentException("QUOTE: invalid argument '" + p + "'; remove extra parentheses");
+            }
+        }
+    }
+
     private static String textOfRequired(Element parent, String childName) {
         Element c = firstChild(parent, childName);
         if (c == null) throw new IllegalArgumentException("Missing <" + childName + ">");
