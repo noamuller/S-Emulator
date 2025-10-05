@@ -6,21 +6,17 @@ import javafx.scene.Scene;
 import javafx.stage.Stage;
 import java.util.Objects;
 
+
 public class MainApp extends Application {
     @Override
-    public void start(Stage stage) throws Exception {
-        FXMLLoader loader = new FXMLLoader(getClass().getResource("/gui/main.fxml"));
-        Scene scene = new Scene(loader.load());
-
-        // Add CSS from classpath (bulletproof)
-        scene.getStylesheets().add(
-                Objects.requireNonNull(getClass().getResource("/gui/style.css")).toExternalForm()
-        );
-
-        stage.setTitle("S-Emulator – GUI");
+    public void start(javafx.stage.Stage stage) throws Exception {
+        javafx.fxml.FXMLLoader fxml = new javafx.fxml.FXMLLoader(MainApp.class.getResource("/gui/main.fxml"));
+        javafx.scene.Scene scene = new javafx.scene.Scene(fxml.load());
+        stage.setTitle("S-Emulator");
         stage.setScene(scene);
         stage.show();
     }
+
 
     public static void main(String[] args) {
         launch(args);

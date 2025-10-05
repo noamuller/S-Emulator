@@ -177,6 +177,23 @@ public final class ProgramParser {
                 continue;
             }
 
+            // ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
+            if (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL")) {
+                Element args = firstChild(e, "S-Instruction-Arguments");
+                String target = null;
+                if (args != null) {
+                    for (Element a : children(args, "S-Instruction-Argument")) {
+                        if (eq(attrOr(a, "name", ""), "gotoLabel")) {
+                            target = attrOr(a, "value", "");
+                        }
+                    }
+                }
+                if (target == null || target.isBlank())
+                    throw new IllegalArgumentException("GOTO_LABEL missing gotoLabel");
+                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
+                continue;
+            }
+
             // ----- INCREASE / DECREASE (basic)
             if (eq(type, "INCREASE")) {
                 String v = textOfRequired(e, "S-Variable");
@@ -186,6 +203,23 @@ public final class ProgramParser {
             if (eq(type, "DECREASE")) {
                 String v = textOfRequired(e, "S-Variable");
                 out.add(Instruction.parseFromText(label, v + " <- " + v + " - 1", "B", 1));
+                continue;
+            }
+
+            // ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
+            if (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL")) {
+                Element args = firstChild(e, "S-Instruction-Arguments");
+                String target = null;
+                if (args != null) {
+                    for (Element a : children(args, "S-Instruction-Argument")) {
+                        if (eq(attrOr(a, "name", ""), "gotoLabel")) {
+                            target = attrOr(a, "value", "");
+                        }
+                    }
+                }
+                if (target == null || target.isBlank())
+                    throw new IllegalArgumentException("GOTO_LABEL missing gotoLabel");
+                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
                 continue;
             }
 
