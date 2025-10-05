@@ -258,6 +258,23 @@ public final class ProgramParser {
                 out.add(Instruction.parseFromText(label, "IF " + v + " != 0 GOTO " + target, "B", 2));
                 continue;
             }
+// ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
+            if (eq(type, "GOTO_LABEL")) {
+                Element args = firstChild(e, "S-Instruction-Arguments");
+                String target = null;
+                if (args != null) {
+                    for (Element a : children(args, "S-Instruction-Argument")) {
+                        String an = attrOr(a, "name", "");
+                        if (eq(an, "gotoLabel") || eq(an, "label") || eq(an, "destLabel")) {
+                            target = attrOr(a, "value", "");
+                        }
+                    }
+                }
+                if (target == null || target.isBlank())
+                    throw new IllegalArgumentException("GOTO_LABEL missing label");
+                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
+                continue;
+            }
 
             // Fallback: keep as synthetic so it still displays in the UI.
             out.add(Instruction.parseFromText(label, type, "S", 1));
