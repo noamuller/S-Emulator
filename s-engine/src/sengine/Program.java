@@ -109,12 +109,34 @@ public final class Program {
     }
 
     // QUOTE <dst> <- Func(<args...>)
+    // QUOTE <dst> <- Func(<args...>)
     private List<Instruction> expandQuote(String dstVar, String funcName, String argsStr) {
         List<Instruction> out = new ArrayList<>();
-        // Evaluate the call into the destination variable directly.
+
+        // Built-in fast path: Successor(Successor(...(x1)...))
+        // Works even if the XML doesn't define a 'Successor' function body.
+        if (funcName.equalsIgnoreCase("Successor")) {
+            // Count how many nested Successor(...) wrap x1 IN THE ARGUMENT,
+            // then add 1 for the OUTER Successor (the function itself).
+            int innerDepth = successorDepthOverX1(argsStr);  // -1 if not Successor^k(x1)
+            if (innerDepth >= 0) {
+                int totalIncrements = 1 + innerDepth;        // <-- outer + inner
+                // y <- x1
+                out.add(Instruction.parseFromText(null, dstVar + " <- x1", "B", 1));
+                // y <- y + 1   (repeat totalIncrements times)
+                for (int i = 0; i < totalIncrements; i++) {
+                    out.add(Instruction.parseFromText(null, dstVar + " <- " + dstVar + " + 1", "B", 1));
+                }
+                return out;
+            }
+        }
+
+        // Default: use the function library (if present)
         evalFuncInto(VariableRef.parse(dstVar), funcName, parseArgs(argsStr), out, new Scratch());
         return out;
     }
+
+
 
     // JUMP_EQUAL_FUNCTION <var> == Func(<args...>) GOTO <label>
     private List<Instruction> expandJumpEqualFunction(String var, String funcName, String argsStr, String target) {
@@ -227,6 +249,20 @@ public final class Program {
     }
 
     // ---------- Argument parsing ----------
+
+    // Examples: "Successor(x1)" -> 1, "Successor(Successor(x1))" -> 2, otherwise -1.
+    private static int successorDepthOverX1(String rhs) {
+        if (rhs == null) return -1;
+        String t = rhs.trim();
+        final String KW = "successor(";
+        int count = 0;
+        while (t.toLowerCase(java.util.Locale.ROOT).startsWith(KW) && t.endsWith(")")) {
+            count++;
+            t = t.substring(KW.length(), t.length() - 1).trim();
+        }
+        return t.equalsIgnoreCase("x1") ? count : -1;
+    }
+
 
     private static final Pattern RX_QUOTE = Pattern.compile(
             "^QUOTE\\s+([xyz]\\d*|y)\\s*<-\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)\\s*$",
