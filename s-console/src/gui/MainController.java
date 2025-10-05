@@ -10,6 +10,8 @@ import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.beans.property.ReadOnlyStringWrapper;
 
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 import sengine.*;
 
@@ -50,6 +52,12 @@ import javafx.scene.control.*;
  * This version matches the fx:id’s and handler names in main.fxml.
  */
 public class MainController {
+
+    // UI
+    @FXML private TextArea selectedChainArea;
+
+    // Keep the last debug session’s step-by-step snapshots (for the chain)
+    private final java.util.List<Debugger.Snapshot> pcTrace = new java.util.ArrayList<>();
 
     // ---------- Top bar ----------
     @FXML private TextField programNameField;
@@ -229,6 +237,10 @@ public class MainController {
         // Table columns
         if (instructionsTable != null) {
             ensureInstructionTableColumns();
+// When the user selects a row, recompute its visit chain from the current trace
+            instructionsTable.getSelectionModel().selectedIndexProperty().addListener((obs, oldIdx, newIdx) -> {
+                updateSelectedChain();
+            });
 
             if (colNum != null) {
                 colNum.setCellValueFactory(cd ->
@@ -667,6 +679,63 @@ public class MainController {
         return (ch ? "* " : "  ") + name + " = " + value;
     }
 
+    // Build the visit chain text for the currently selected row from pcTrace
+    private void updateSelectedChain() {
+        if (selectedChainArea == null || instructionsTable == null) return;
+        int sel = instructionsTable.getSelectionModel().getSelectedIndex();
+        if (sel < 0) { selectedChainArea.clear(); return; }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Row #").append(sel + 1).append(" visit chain").append(System.lineSeparator());
+
+        int hits = 0;
+        for (int t = 0; t < pcTrace.size(); t++) {
+            Debugger.Snapshot s = pcTrace.get(t);
+            if (!s.halted && s.pc == sel) {
+                hits++;
+                // show a compact view: t index and y/x/z summary line
+                sb.append("t=").append(t).append(": ");
+                sb.append(shortVarLine(s.vars)).append(System.lineSeparator());
+            }
+        }
+        if (hits == 0) sb.append("(not visited in this debug session)");
+
+        selectedChainArea.setText(sb.toString());
+    }
+
+    private String shortVarLine(Map<String,Integer> vars) {
+        // y, then first few x’s and z’s (compact)
+        StringBuilder line = new StringBuilder();
+        if (vars.containsKey("y")) line.append("y=").append(vars.get("y")).append("  ");
+        // first three x’s
+        for (int i = 0, seen = 0; seen < 3; i++) {
+            String k = "x" + i;
+            if (vars.containsKey(k)) { line.append(k).append("=").append(vars.get(k)).append("  "); seen++; }
+            if (i > 50) break; // safety
+        }
+        // first three z’s
+        for (int i = 0, seen = 0; seen < 3; i++) {
+            String k = "z" + i;
+            if (vars.containsKey(k)) { line.append(k).append("=").append(vars.get(k)).append("  "); seen++; }
+            if (i > 50) break; // safety
+        }
+        return line.toString().trim();
+    }
+
+    @FXML
+    private void onExpandDegree(ActionEvent e) {
+        if (currentProgram == null || degreeField == null) { showError("Load a program first."); return; }
+        int max = currentProgram.maxDegree();
+        int d = clamp(parseIntoZero(degreeField.getText()), 0, max);
+        if (d < max) {
+            degreeField.setText(Integer.toString(d + 1));
+            listProgramAtDegreeField();
+            appendStatus("Expanded to degree " + (d + 1) + ".");
+        } else {
+            appendStatus("Already at max degree " + max + ".");
+        }
+    }
+
     @FXML
     private void onShowProgram(ActionEvent e) {
         if (currentProgram == null) { showError("Load a program first."); return; }
@@ -757,6 +826,10 @@ public class MainController {
 
             // Show initial snapshot
             applyDebugSnapshot(debugger.snapshot());
+            pcTrace.clear();
+            pcTrace.add(debugger.snapshot());
+            updateSelectedChain();
+
             // recompute highlights for current filters
             recomputeLabelRows();
             recomputeVarRows();
@@ -785,6 +858,9 @@ public class MainController {
             try {
                 Debugger.Snapshot snap = debugger.step();
                 applyDebugSnapshot(snap);
+                pcTrace.add(snap);
+                updateSelectedChain();
+
                 if (snap.halted) {
                     appendStatus("Debugger: halted.");
                     resumeTimer.stop();
@@ -811,6 +887,9 @@ public class MainController {
         try {
             Debugger.Snapshot snap = debugger.step();
             applyDebugSnapshot(snap);
+            pcTrace.add(snap);
+            updateSelectedChain();
+
             if (snap.halted) appendStatus("Debugger: halted.");
         } catch (Exception ex) {
             showError(ex.getMessage());
@@ -828,6 +907,9 @@ public class MainController {
             debugger = null;
             appendStatus("Debugger: stopped.");
         }
+        pcTrace.clear();
+        updateSelectedChain();
+
         if (pcLabel != null)   pcLabel.setText("*");
         if (haltLabel != null) haltLabel.setText("false");
         if (instructionsTable != null) instructionsTable.refresh();
@@ -1169,14 +1251,29 @@ public class MainController {
 
     // ---------- Row models ----------
     public static final class HistoryRow {
-        public final int runNo, degree, y, cycles;
+        public final int runNo;
+        public final int degree;
         public final String inputsCsv;
+        public final int y;
+        public final int cycles;
         public final java.util.Map<String,Integer> snapshot; // full variables snapshot
 
-        public HistoryRow(int runNo, int degree, String inputsCsv, int y, int cycles, java.util.Map<String,Integer> snapshot) {
-            this.runNo = runNo; this.degree = degree; this.inputsCsv = inputsCsv; this.y = y; this.cycles = cycles;
+        public HistoryRow(int runNo, int degree, String inputsCsv, int y, int cycles,
+                          java.util.Map<String,Integer> snapshot) {
+            this.runNo = runNo;
+            this.degree = degree;
+            this.inputsCsv = inputsCsv;
+            this.y = y;
+            this.cycles = cycles;
             this.snapshot = snapshot;
         }
+
+        // --- getters required by PropertyValueFactory in FXML ---
+        public int getRunNo()        { return runNo; }
+        public int getDegree()       { return degree; }
+        public String getInputsCsv() { return inputsCsv; }
+        public int getY()            { return y; }
+        public int getCycles()       { return cycles; }
     }
 
 

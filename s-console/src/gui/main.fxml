@@ -19,6 +19,7 @@
             <Label text="/"/>
             <TextField fx:id="maxDegreeField" prefWidth="50" editable="false"/>
             <Button text="Show Program" onAction="#onShowProgram"/>
+            <Button text="Expand" onAction="#onExpandDegree"/>
             <Separator/>
             <ProgressBar fx:id="loadProgress" prefWidth="150"/>
             <Label fx:id="loadStatus" text=""/>
@@ -59,7 +60,14 @@
                         </GridPane>
                     </content>
                 </TitledPane>
+                <!-- Selected instruction history chain -->
+                <TitledPane text="Selected instruction history chain" expanded="false">
+                    <content>
+                        <TextArea fx:id="selectedChainArea" wrapText="true" prefRowCount="6"/>
+                    </content>
+                </TitledPane>
             </VBox>
+
 
             <!-- RIGHT: stacked panes wrapped in ScrollPane (resizes nicely) -->
             <ScrollPane fitToWidth="true" fitToHeight="true" pannable="false">

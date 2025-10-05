@@ -157,6 +157,24 @@ public final class ProgramParser {
                 continue;
             }
 
+// ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
+            if (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL")) {
+                Element args = firstChild(e, "S-Instruction-Arguments");
+                String target = null;
+                if (args != null) {
+                    for (Element a : children(args, "S-Instruction-Argument")) {
+                        String an = attrOr(a, "name", "");
+                        if (eq(an, "gotoLabel") || eq(an, "label")) {
+                            target = attrOr(a, "value", "");
+                        }
+                    }
+                }
+                if (target == null || target.isBlank())
+                    throw new IllegalArgumentException("GOTO_LABEL missing label");
+                // create a Basic instruction text that the engine understands
+                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
+                continue;
+            }
 
 
             // ----- ASSIGNMENT (synthetic): <S-Variable>y</S-Variable>, arg assignedVariable="x1"
