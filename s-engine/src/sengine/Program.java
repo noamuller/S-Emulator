@@ -28,6 +28,10 @@ public final class Program {
     public final String name;
     public final List<Instruction> instructions;
 
+    private static String norm(String s) {
+        return s == null ? "" : s.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
     // Optional function library (name -> body as instructions parsed with our normal parser)
     public final Map<String, List<Instruction>> functions;
 

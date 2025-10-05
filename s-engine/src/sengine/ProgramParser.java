@@ -109,21 +109,39 @@ public final class ProgramParser {
                 continue;
             }
 
-            // ----- QUOTE (with <S-Variable>dst</S-Variable> + functionName=Const) → dst <- CONST
+            // ----- QUOTE
+// Supports two forms:
+//  (A) Legacy/constant:     QUOTE y <- ConstFunction()           → y <- CONST
+//  (B) Callable (new):       QUOTE y <- Func(args...)             → synthetic, expanded at degree>0
             if (eq(type, "QUOTE")) {
-                String dst = textOfOptional(e, "S-Variable"); // quotation.xml uses this
-                Element args = firstChild(e, "S-Instruction-Arguments");
-                String fnName = null;
-                if (args != null) {
-                    for (Element a : children(args, "S-Instruction-Argument")) {
-                        if (eq(attrOr(a, "name", ""), "functionName")) {
-                            fnName = attrOr(a, "value", "");
-                        }
-                    }
-                }
+                String dst = textOfOptional(e, "S-Variable");
                 if (dst == null || dst.isBlank())
                     throw new IllegalArgumentException("QUOTE missing <S-Variable>");
-                Integer constVal = (fnName == null || fnName.isBlank()) ? null : tryResolveConstFunction(root, fnName);
+
+                Element argsWrap = firstChild(e, "S-Instruction-Arguments");
+                String fnName = null;
+                String fnArgs = ""; // e.g. "(Successor,x1)"
+                if (argsWrap != null) {
+                    for (Element a : children(argsWrap, "S-Instruction-Argument")) {
+                        String n = attrOr(a, "name", "");
+                        if (eq(n, "functionName"))       fnName = attrOr(a, "value", "");
+                        else if (eq(n, "functionArguments")) fnArgs = attrOr(a, "value", "");
+                    }
+                }
+
+                if (fnName == null || fnName.isBlank())
+                    throw new IllegalArgumentException("QUOTE: missing functionName");
+
+                // If functionArguments exist → create a SYNTHETIC "QUOTE dst <- Func(args)" line.
+                // Program.expandToDegree(1) will inline it via RX_QUOTE.
+                if (fnArgs != null && !fnArgs.isBlank()) {
+                    String text = "QUOTE " + dst + " <- " + fnName + "(" + fnArgs.trim() + ")";
+                    out.add(Instruction.parseFromText(label, text, "S", null));
+                    continue;
+                }
+
+                // Otherwise fall back to the old constant-function behavior
+                Integer constVal = tryResolveConstFunction(root, fnName);
                 if (constVal == null)
                     throw new IllegalArgumentException("QUOTE: function '" + fnName + "' must be a constant function");
                 out.add(Instruction.parseFromText(label, dst + " <- " + constVal, "B", 1));

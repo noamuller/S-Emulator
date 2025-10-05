@@ -15,53 +15,47 @@ import java.util.*;
 
 /**
  * GUI controller for תרגיל 2 – S-Emulator.
- * This version matches the fx:id and widget types in your main.fxml.
+ * This version matches the fx:id’s and handler names in main.fxml.
  */
 public class MainController {
 
-    // -------------------------
-    // Top bar (matches FXML ids)
-    // -------------------------
-    @FXML private TextField programNameField;  // was programField
+    // ---------- Top bar ----------
+    @FXML private TextField programNameField;
     @FXML private ComboBox<String> functionCombo;
     @FXML private TextField degreeField;
-    @FXML private TextField maxDegreeField;   // was degreeMaxField
+    @FXML private TextField maxDegreeField;
+    @FXML private ProgressBar loadProgress;
 
-    // -------------------------
-    // Center: instructions table
-    // -------------------------
+    // ---------- Center: instructions table ----------
     @FXML private TableView<Instruction> instructionsTable;
-    @FXML private TableColumn<Instruction, String> colNum;    // was colIdx
-    @FXML private TableColumn<Instruction, String> colType;   // was colBS
+    @FXML private TableColumn<Instruction, String> colNum;
+    @FXML private TableColumn<Instruction, String> colType;
     @FXML private TableColumn<Instruction, String> colLabel;
     @FXML private TableColumn<Instruction, String> colText;
     @FXML private TableColumn<Instruction, String> colCycles;
 
-    // Bottom: origin chain list
+    // Origin chain list
     @FXML private ListView<String> originList;
 
-    // -------------------------
-    // Right: Program facts
-    // -------------------------
-    @FXML private TextArea labelsArea;              // was labelsList (ListView)
-    @FXML private ListView<String> varsList;        // unchanged
+    // ---------- Right: Program facts ----------
+    @FXML private TextArea labelsArea;
+    @FXML private ListView<String> varsList;
 
-    // -------------------------
-    // Right: Run
-    // -------------------------
+    // ---------- Right: Run ----------
     @FXML private TextField inputsField;
     @FXML private Label pcLabel;
     @FXML private Label cyclesLabel;
     @FXML private Label haltLabel;
 
-    // -------------------------
-    // Debug buttons (stubs)
-    // -------------------------
+    // ---------- Debugger / summary ----------
     @FXML private Button btnStartDebug, btnStep, btnResume, btnStop;
+    @FXML private TextArea debugSummaryArea;
 
-    // -------------------------
-    // History
-    // -------------------------
+    // ---------- Highlight controls ----------
+    @FXML private TextField highlightLabelField;
+    @FXML private TextField highlightVarField;
+
+    // ---------- History ----------
     @FXML private TitledPane historyPane;
     @FXML private TableView<HistoryRow> historyTable;
     @FXML private TableColumn<HistoryRow, String> hColRun;
@@ -69,26 +63,19 @@ public class MainController {
     @FXML private TableColumn<HistoryRow, String> hColInputs;
     @FXML private TableColumn<HistoryRow, String> hColY;
     @FXML private TableColumn<HistoryRow, String> hColCycles;
-
     private final ObservableList<HistoryRow> historyRows = FXCollections.observableArrayList();
 
-    // -------------------------
-    // Errors
-    // -------------------------
+    // ---------- Errors ----------
     @FXML private TitledPane errorsPane;
     @FXML private TableView<ErrorRow> errorsTable;
     @FXML private TableColumn<ErrorRow, String> eColWhen;
     @FXML private TableColumn<ErrorRow, String> eColWhat;
     private final ObservableList<ErrorRow> errorRows = FXCollections.observableArrayList();
 
-    // -------------------------
-    // Status
-    // -------------------------
+    // ---------- Status ----------
     @FXML private TextArea statusArea;
 
-    // -------------------------
-    // Engine state
-    // -------------------------
+    // ---------- Engine state ----------
     private Program currentProgram = null;
     private Program lastGoodProgram = null;
 
@@ -99,7 +86,8 @@ public class MainController {
     private void initialize() {
         if (programNameField != null) programNameField.setEditable(false);
         if (maxDegreeField != null)   maxDegreeField.setEditable(false);
-        if (functionCombo != null)    functionCombo.setDisable(true);
+        if (functionCombo != null)    functionCombo.setDisable(true); // (optional) not used yet
+        if (loadProgress != null)     { loadProgress.setVisible(false); loadProgress.setManaged(false); }
 
         // Table columns
         if (instructionsTable != null) {
@@ -140,37 +128,40 @@ public class MainController {
                         originList.setItems(FXCollections.observableArrayList(chain));
                     }
                 } catch (Exception ex) {
-                    if (originList != null) originList.setItems(FXCollections.observableArrayList("No origin"));
+                    showError(ex.getMessage());
                 }
             });
         }
 
-        // History table
-        if (historyTable != null) historyTable.setItems(historyRows);
-        if (hColRun != null)    hColRun.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().runNo)));
-        if (hColDegree != null) hColDegree.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().degree)));
-        if (hColInputs != null) hColInputs.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().inputsCsv));
-        if (hColY != null)      hColY.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().y)));
-        if (hColCycles != null) hColCycles.setCellValueFactory(d -> new SimpleStringProperty(Integer.toString(d.getValue().cycles)));
+        // History table setup
+        if (historyTable != null) {
+            historyTable.setItems(historyRows);
+            if (hColRun != null)    hColRun.setCellValueFactory(cd -> new SimpleStringProperty(Integer.toString(cd.getValue().runNo)));
+            if (hColDegree != null) hColDegree.setCellValueFactory(cd -> new SimpleStringProperty(Integer.toString(cd.getValue().degree)));
+            if (hColInputs != null) hColInputs.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().inputsCsv));
+            if (hColY != null)      hColY.setCellValueFactory(cd -> new SimpleStringProperty(Integer.toString(cd.getValue().y)));
+            if (hColCycles != null) hColCycles.setCellValueFactory(cd -> new SimpleStringProperty(
+                    cd.getValue().cycles < 0 ? "" : Integer.toString(cd.getValue().cycles)));
+        }
 
-        // Errors table
-        if (errorsTable != null) errorsTable.setItems(errorRows);
-        if (eColWhen != null) eColWhen.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().when));
-        if (eColWhat != null) eColWhat.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().what));
-
-        appendStatus("Ready.");
+        // Errors table setup
+        if (errorsTable != null) {
+            errorsTable.setItems(errorRows);
+            if (eColWhen != null) eColWhen.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().when));
+            if (eColWhat != null) eColWhat.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().what));
+        }
     }
 
     // ======================================================
-    // Commands
+    // Top-bar actions
     // ======================================================
+
     @FXML
-    private void onLoadXml(ActionEvent e) {
+    private void onLoadXml() {
         try {
             FileChooser chooser = new FileChooser();
-            chooser.setTitle("Open XML");
-            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("XML Files", "*.xml"));
-            Window win = (degreeField == null) ? null : degreeField.getScene().getWindow();
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("S-XML (*.xml)", "*.xml"));
+            Window win = degreeField == null ? null : degreeField.getScene().getWindow();
             File file = chooser.showOpenDialog(win);
             if (file == null) return;
 
@@ -178,15 +169,15 @@ public class MainController {
             String err = ProgramParser.validateLabels(p);
             if (err != null) throw new IllegalArgumentException(err);
 
-            currentProgram = p;
-            lastGoodProgram = p;
+            currentProgram   = p;
+            lastGoodProgram  = p;
 
             if (programNameField != null) programNameField.setText(p.name);
             if (maxDegreeField != null)    maxDegreeField.setText(Integer.toString(p.maxDegree()));
             if (degreeField != null)       degreeField.setText("0");
 
-            listProgram();    // degree 0
-            setFactsBox(p);   // best-effort facts
+            listProgram();   // degree 0
+            setFactsBox(p);  // show labels/vars
 
             appendStatus("Loaded \"" + p.name + "\".");
         } catch (Exception ex) {
@@ -201,53 +192,100 @@ public class MainController {
     @FXML private void onShowProgram(ActionEvent e) { listProgram(); }
     @FXML private void onExpand(ActionEvent e)      { listProgram(); }
 
+    // ======================================================
+    // Run & Debug
+    // ======================================================
+
     @FXML
     private void onRun() {
         if (currentProgram == null) { showError("Load a program first."); return; }
 
-        // 1) Parse inputs from the text field (or empty string)
+        // 1) Parse inputs from the text field (or empty)
         List<Integer> inputs = parseInputs(inputsField == null ? "" : inputsField.getText());
 
         try {
-            // 2) Degree: parse -> clamp -> RUN (pass Program + degree to Runner)
+            // 2) Degree: parse → clamp
             int deg = parseIntoZero(degreeField == null ? "" : degreeField.getText());
             deg = clamp(deg, 0, currentProgram.maxDegree());
 
-            // IMPORTANT: call the Runner signature that expects (Program, int, List<Integer>)
+            // 3) Run
             Runner.RunResult rr = Runner.run(currentProgram, deg, inputs);
 
-            // 3) Optional live labels — set only what we surely know
-            if (cyclesLabel != null) {
-                // We haven't wired cycles from the engine yet; leave blank for now.
-                cyclesLabel.setText("");
-            }
-            if (pcLabel != null) pcLabel.setText("*");          // placeholder for PC if you track it later
-            if (haltLabel != null) haltLabel.setText("true");   // program fully ran if we got here
+            // 4) Update quick labels
+            if (cyclesLabel != null) cyclesLabel.setText(Integer.toString(rr.cycles));
+            if (pcLabel != null)     pcLabel.setText("*");
+            if (haltLabel != null)   haltLabel.setText("true");
 
-            // 4) Push to UI history (store -1 until cycles is exposed from the engine)
+// 5) Push to history
             int runNo = historyRows.size() + 1;
-            historyRows.add(new HistoryRow(runNo, deg, inputsToString(inputs), rr.y, -1));
+            historyRows.add(new HistoryRow(runNo, deg, inputsToString(inputs), rr.y, rr.cycles));
 
-            // 5) Status line
-            appendStatus("Run finished • y = " + rr.y);
+// 6) Status line
+            appendStatus("Run finished • y = " + rr.y + " • cycles = " + rr.cycles);
+
+
 
         } catch (Exception ex) {
             showError(ex.getMessage());
         }
     }
 
-    // Parses an integer; if blank/invalid, returns 0.
-    private static int parseIntoZero(String s) {
-        if (s == null) return 0;
-        try {
-            String t = s.trim();
-            if (t.isEmpty()) return 0;
-            return Integer.parseInt(t);
-        } catch (NumberFormatException e) {
-            return 0;
-        }
+    @FXML private void onStartRegular(ActionEvent e) { onRun(); }
+    @FXML private void onStartDebug(ActionEvent e)   { appendStatus("Debug: start (stub)."); }
+    @FXML private void onResume(ActionEvent e)       { appendStatus("Debug: resume (stub)."); }
+    @FXML private void onStepOver(ActionEvent e)     { appendStatus("Debug: step over (stub)."); }
+    @FXML private void onStop(ActionEvent e)         { appendStatus("Debug: stop (stub)."); }
+
+    // ======================================================
+    // Highlight (matches FXML handler names)
+    // ======================================================
+
+    @FXML
+    private void onHighlightLabel(ActionEvent e) {
+        if (instructionsTable == null) return;
+        String wanted = highlightLabelField == null ? "" : highlightLabelField.getText();
+        if (wanted == null || wanted.isBlank()) return;
+        int idx = findFirstByLabel(wanted.trim());
+        if (idx >= 0) instructionsTable.getSelectionModel().select(idx);
     }
 
+    @FXML
+    private void onHighlightVar(ActionEvent e) { // exact name used in main.fxml
+        if (instructionsTable == null) return;
+        String v = highlightVarField == null ? "" : highlightVarField.getText();
+        if (v == null || v.isBlank()) return;
+        int idx = findFirstByVar(v.trim());
+        if (idx >= 0) instructionsTable.getSelectionModel().select(idx);
+    }
+
+    @FXML
+    private void onClearHighlight(ActionEvent e) {
+        if (instructionsTable != null) instructionsTable.getSelectionModel().clearSelection();
+    }
+
+    private int findFirstByLabel(String label) {
+        var rows = instructionsTable.getItems();
+        for (int i = 0; i < rows.size(); i++) {
+            String l = rows.get(i).label;
+            if (l != null && l.equals(label)) return i;
+        }
+        return -1;
+    }
+
+    private int findFirstByVar(String var) {
+        var rows = instructionsTable.getItems();
+        for (int i = 0; i < rows.size(); i++) {
+            if (rows.get(i).text != null &&
+                    rows.get(i).text.matches(".*\\b" + java.util.regex.Pattern.quote(var) + "\\b.*")) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // ======================================================
+    // History / Errors
+    // ======================================================
 
     @FXML
     private void onShowHistory() {
@@ -277,14 +315,6 @@ public class MainController {
         onRun();
     }
 
-    // --- Debugger • Execution handlers (stubs) ---
-    @FXML private void onStartRegular(ActionEvent e) { onRun(); }
-    @FXML private void onStartDebug(ActionEvent e)   { appendStatus("Debug: start (stub)."); }
-    @FXML private void onResume(ActionEvent e)       { appendStatus("Debug: resume (stub)."); }
-    @FXML private void onStepOver(ActionEvent e)     { appendStatus("Debug: step over (stub)."); }
-    @FXML private void onStop(ActionEvent e)         { appendStatus("Debug: stop (stub)."); }
-
-    // Errors
     @FXML
     private void onClearErrors() {
         errorRows.clear();
@@ -294,6 +324,7 @@ public class MainController {
     // ======================================================
     // Helpers
     // ======================================================
+
     private void listProgram() {
         if (currentProgram == null) { showError("Load a program first."); return; }
         try {
@@ -319,7 +350,7 @@ public class MainController {
         try {
             Program.Rendered r0 = p.expandToDegree(0);
 
-            // Labels used → labelsArea (TextArea)
+            // Labels → labelsArea
             if (labelsArea != null) {
                 Set<String> labels = new TreeSet<>();
                 for (Instruction ins : r0.list) {
@@ -328,7 +359,7 @@ public class MainController {
                 labelsArea.setText(String.join(", ", labels));
             }
 
-            // Variables referenced (names only) → varsList
+            // Variables (names only) → varsList
             if (varsList != null) {
                 Set<String> vars = new TreeSet<>();
                 for (Instruction ins : r0.list) extractVars(ins.text, vars);
@@ -370,6 +401,18 @@ public class MainController {
     private int parseIntOrZero(String s) {
         if (s == null) return 0;
         try { return Integer.parseInt(s.trim()); } catch (Exception ignore) { return 0; }
+    }
+
+    // Parses an integer; if blank/invalid, returns 0.
+    private static int parseIntoZero(String s) {
+        if (s == null) return 0;
+        try {
+            String t = s.trim();
+            if (t.isEmpty()) return 0;
+            return Integer.parseInt(t);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private List<Integer> parseInputs(String s) {
@@ -422,9 +465,7 @@ public class MainController {
         a.showAndWait();
     }
 
-    // ======================================================
-    // Row models
-    // ======================================================
+    // ---------- Row models ----------
     public static final class HistoryRow {
         public final int runNo, degree, y, cycles;
         public final String inputsCsv;
