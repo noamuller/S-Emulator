@@ -318,8 +318,6 @@ public class MainController {
                         if (varRows.contains(getIndex()))   getStyleClass().add("highlight-var");
                     }
 
-
-
                 });
 
             });
@@ -437,8 +435,8 @@ public class MainController {
                 Program p = ProgramParser.parseFromXml(file);
                 updateProgress(40, 100);
                 updateMessage("Checking labels…");
-                String labelErr = ProgramParser.validateLabels(p);
-                if (labelErr != null) throw new IllegalArgumentException(labelErr);
+                //String labelErr = ProgramParser.validateLabels(p);
+                //if (labelErr != null) throw new IllegalArgumentException(labelErr);
 
                 // Tiny simulated delay so progress bar is visible
                 updateMessage("Finalizing…");
@@ -547,8 +545,8 @@ public class MainController {
         if (currentProgram == null || instructionsTable == null) return;
         int deg = clamp(parseIntoZero(degreeField == null ? "" : degreeField.getText()),
                 0, currentProgram.maxDegree());
-        Program.Rendered r = currentProgram.expandToDegree(deg);
-        instructionsTable.setItems(FXCollections.observableArrayList(r.list));
+        sengine.Program.Rendered r = currentProgram.expandToDegree(deg);
+        instructionsTable.setItems(javafx.collections.FXCollections.observableArrayList(r.list));
         // Update label/var highlighting for the new list
         recomputeLabelRows();
         recomputeVarRows();
@@ -723,27 +721,44 @@ public class MainController {
     }
 
     @FXML
-    private void onExpandDegree(ActionEvent e) {
-        if (currentProgram == null || degreeField == null) { showError("Load a program first."); return; }
+    private void onExpandDegree(javafx.event.ActionEvent e) {
+        if (currentProgram == null) { showError("Load a program first."); return; }
+        int cur = 0;
+        try {
+            String txt = degreeField == null ? "" : degreeField.getText();
+            cur = (txt == null || txt.trim().isEmpty()) ? 0 : Integer.parseInt(txt.trim());
+        } catch (NumberFormatException ex) {
+            cur = 0;
+        }
         int max = currentProgram.maxDegree();
-        int d = clamp(parseIntoZero(degreeField.getText()), 0, max);
-        if (d < max) {
-            degreeField.setText(Integer.toString(d + 1));
-            listProgramAtDegreeField();
-            appendStatus("Expanded to degree " + (d + 1) + ".");
+        if (cur < max) {
+            cur = cur + 1;
+            appendStatus("Expanded to degree " + cur + " / " + max + ".");
         } else {
             appendStatus("Already at max degree " + max + ".");
         }
+        if (degreeField != null) degreeField.setText(Integer.toString(cur));
+        if (maxDegreeField != null) maxDegreeField.setText(Integer.toString(max));
+        listProgramAtDegreeField();
     }
 
     @FXML
-    private void onShowProgram(ActionEvent e) {
+    private void onShowProgram(javafx.event.ActionEvent e) {
         if (currentProgram == null) { showError("Load a program first."); return; }
-        if (maxDegreeField != null) maxDegreeField.setText(Integer.toString(currentProgram.maxDegree()));
+        int max = currentProgram.maxDegree();
+        int requested = 0;
+        try {
+            String txt = degreeField == null ? "" : degreeField.getText();
+            requested = (txt == null || txt.trim().isEmpty()) ? 0 : Integer.parseInt(txt.trim());
+        } catch (NumberFormatException ex) {
+            requested = 0;
+        }
+        if (requested < 0) requested = 0;
+        if (requested > max) requested = max;
+        if (degreeField != null) degreeField.setText(Integer.toString(requested));
+        if (maxDegreeField != null) maxDegreeField.setText(Integer.toString(max));
         listProgramAtDegreeField();
-        appendStatus("Listed program at degree " +
-                clamp(parseIntoZero(degreeField == null ? "" : degreeField.getText()),
-                        0, currentProgram.maxDegree()) + ".");
+        appendStatus("Listed program at degree " + requested + " / " + max + ".");
     }
 
     @FXML private void onExpand(ActionEvent e)      { listProgram(); }

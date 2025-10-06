@@ -3,163 +3,228 @@ package sengine;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
- * Program model + expansion logic (degree 0/1).
+ * Program model + expansion engine (תרגיל 2).
  *
- * For תרגיל 2 we also support a small function library (parsed from <S-Functions>).
- * Two synthetic forms are expanded here at degree=1:
- *   - QUOTE:   QUOTE <dst> <- Func(<args...>)
- *   - JEF:     JUMP_EQUAL_FUNCTION <var> == Func(<args...>) GOTO <label|EXIT>
+ * Degree:
+ *  - 0: keep synthetics (QUOTE / JUMP_EQUAL_FUNCTION)
+ *  - 1: inline synthetics into basic instructions
  *
- * The function body is inlined with simple variable substitution:
- *   - y inside the function is rewritten to the caller's destination (<dst>).
- *   - x1,x2,... inside the function are bound to the evaluated argument values.
- *     If an argument itself is a function call, it is evaluated first into a fresh zK
- *     scratch variable, and that zK is bound to the corresponding xN.
- *   - z* used inside the function are renamed to fresh zK to avoid collisions.
- *   - Labels Lk inside the function are remapped to unique L(K+offset) to avoid collisions.
- *
- * Degree 0 returns the program as-is. Degree 1 returns the expanded, inlined form.
- * (All function bodies are turned into basic instructions by the parser already.)
+ * Fixes included:
+ *  - Robust parsing of nested function args (tuple "(Fn,...)" and call "Fn(...)")
+ *  - QUOTE/JEF allowed *inside function bodies*
+ *  - Any EXIT inside inlined functions remapped to a per-call local "return" label
+ *  - Back-compat for console App: Rendered now exposes name, lines, sumCycles
  */
 public final class Program {
+
+    // -------------------------
+    // Rendered view (back-compat)
+    // -------------------------
+    public static final class Rendered {
+        /** Program name (for console App printing). */
+        public final String name;
+        /** The instruction list to display/run (used by GUI). */
+        public final List<Instruction> list;
+        /** Origin info per row (used by GUI). Same size as {@link #list}. */
+        public final List<List<String>> originChains;
+        /** Pre-formatted lines (for console App printing). */
+        public final List<String> lines;
+        /** Sum of cycles over the listed instructions (for console App). */
+        public final int sumCycles;
+
+        public Rendered(String name, List<Instruction> list, List<List<String>> originChains) {
+            this.name = name;
+            this.list = list;
+            this.originChains = originChains;
+            this.lines = toLines(list);
+            this.sumCycles = sumCyclesOf(list);
+        }
+    }
+
+    // -------------------------
+    // Fields & Constructors
+    // -------------------------
     public final String name;
-    public final List<Instruction> instructions;
+    public final List<Instruction> instructions;                 // degree-0 program body
+    public final Map<String, List<Instruction>> functions;       // name -> textual body
 
-    private static String norm(String s) {
-        return s == null ? "" : s.trim().toLowerCase(java.util.Locale.ROOT);
+    public Program(String name, List<Instruction> instructions) {
+        this(name, instructions, new LinkedHashMap<>());
     }
 
-    // Optional function library (name -> body as instructions parsed with our normal parser)
-    public final Map<String, List<Instruction>> functions;
-
-    public Program(String name, List<Instruction> ins) {
-        this(name, ins, Map.of());
-    }
-
-    public Program(String name, List<Instruction> ins, Map<String, List<Instruction>> functions) {
+    public Program(String name, List<Instruction> instructions,
+                   Map<String, List<Instruction>> functions) {
         this.name = name;
-        this.instructions = List.copyOf(ins);
-        this.functions = Collections.unmodifiableMap(new LinkedHashMap<>(functions));
+        this.instructions = new ArrayList<>(instructions);
+        this.functions = (functions == null) ? new LinkedHashMap<>() : new LinkedHashMap<>(functions);
     }
 
-    public boolean hasSynthetic() {
-        return instructions.stream().anyMatch(i -> !i.basic);
-    }
-    public int maxExpansionDegree() { return hasSynthetic() ? 1 : 0; }
-    /** Back-compat for existing GUI code that calls maxDegree(). */
+    // -------------------------
+    // Degree & Expansion API
+    // -------------------------
+
+    /** Maximum expansion degree (0 if no synthetics, 1 if any QUOTE/JEF exist). */
     public int maxDegree() {
-        return maxExpansionDegree();
+        for (Instruction ins : instructions) {
+            if (isSynthetic(ins)) return 1;
+        }
+        for (List<Instruction> body : functions.values()) {
+            for (Instruction ins : body) {
+                if (isSynthetic(ins)) return 1;
+            }
+        }
+        return 0;
     }
 
-    // ---------- Rendering / expansion ----------
-
+    /** Expand to requested degree (clamped). */
+    /** Expand to requested degree (clamped). */
     public Rendered expandToDegree(int degree) {
-        if (degree <= 0) return render(instructions, Map.of());
-        List<Instruction> flat = new ArrayList<>();
-        Map<Integer, Instruction> originMap = new HashMap<>();
-        int n = 0;
+        int d = Math.max(0, Math.min(degree, maxDegree()));
 
-        for (Instruction i : instructions) {
-            if (i.basic) {
-                flat.add(i);
-                originMap.put(++n, null); // no synthetic parent
-                continue;
-            }
+        if (d == 0) {
+            // Degree 0: return the original list, with a one-line origin per row.
+            List<List<String>> chains = new ArrayList<>(instructions.size());
+            for (Instruction ins : instructions) chains.add(List.of(renderOriginLine(ins)));
+            return new Rendered(name,
+                    Collections.unmodifiableList(instructions),
+                    Collections.unmodifiableList(chains));
+        }
 
-            // Try to expand the synthetic ourselves if it is one of our known macros.
-            List<Instruction> expanded = tryExpandKnownSynthetic(i);
-            if (expanded == null || expanded.isEmpty()) {
-                // Unknown synthetic - keep as-is so the UI still shows something
-                flat.add(i);
-                originMap.put(++n, null);
+        // Degree 1: inline synthetics. Also force EVERY remaining line to be BASIC (type "B").
+        List<Instruction> out = new ArrayList<>();
+        List<List<String>> chains = new ArrayList<>();
+
+        for (Instruction ins : instructions) {
+            List<Instruction> expanded = tryExpandKnownSynthetic(ins);
+            if (expanded != null) {
+                String origin = renderOriginLine(ins);
+                List<String> chain = List.of(origin);
+                for (Instruction e : expanded) {
+                    // already created as "B" inside the expanders
+                    out.add(e);
+                    chains.add(chain);
+                }
             } else {
-                for (Instruction x : expanded) {
-                    flat.add(x);
-                    originMap.put(++n, i); // ancestry: child came from i
-                }
+                // Not a QUOTE/JEF → convert whatever it is (even if originally "S") to a BASIC line
+                Instruction b = asBasic(ins);
+                out.add(b);
+                chains.add(List.of(renderOriginLine(ins)));
             }
         }
-        return render(flat, originMap);
+        return new Rendered(name,
+                Collections.unmodifiableList(out),
+                Collections.unmodifiableList(chains));
+    }
+    /** Convert any instruction to a BASIC instruction with the same label/text. */
+    private static Instruction asBasic(Instruction src) {
+        String lbl = (src == null) ? null : src.label;
+        String txt = (src == null) ? ""   : src.text;
+        return Instruction.parseFromText(lbl, txt, "B", cyclesFor(txt));
     }
 
-    private List<Instruction> tryExpandKnownSynthetic(Instruction inst) {
-        // We rely on the parser to set a readable text like:
-        //   QUOTE y <- Func(...)
-        //   JUMP_EQUAL_FUNCTION x1 == Func(...) GOTO L7
-        String t = inst.text == null ? "" : inst.text.trim();
 
-        Matcher m;
-        if ((m = RX_QUOTE.matcher(t)).matches()) {
-            String dst = m.group(1);
-            String func = m.group(2);
-            String argStr = m.group(3) == null ? "" : m.group(3).trim();
-            return expandQuote(dst, func, argStr);
+    // Returns 2 for IF-lines, 1 otherwise.
+    private static int cyclesFor(String text) {
+        if (text == null) return 1;
+        String t = text.trim().toUpperCase(java.util.Locale.ROOT);
+        return t.startsWith("IF ") ? 2 : 1;
+    }
 
-        } else if ((m = RX_JEF.matcher(t)).matches()) {
-            String var   = m.group(1);
-            String func  = m.group(2);
-            String argStr= m.group(3) == null ? "" : m.group(3).trim();
-            String label = m.group(4);
-            return expandJumpEqualFunction(var, func, argStr, label);
+    private static String renderOriginLine(Instruction ins) {
+        String lbl = (ins.label == null || ins.label.isBlank()) ? "" : (ins.label + ": ");
+        String txt = (ins.text == null) ? "" : ins.text;
+        return (lbl + txt).trim();
+    }
+
+    // -------------------------
+    // Recognize + expand synthetics
+    // -------------------------
+
+    private static final Pattern RX_QUOTE =
+            Pattern.compile("^\\s*QUOTE\\s+([A-Za-z]\\d*|y)\\s*<-\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)\\s*$");
+
+    private static final Pattern RX_JEF =
+            Pattern.compile("^\\s*JUMP_EQUAL_FUNCTION\\s+([A-Za-z]\\d*|y)\\s*==\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)\\s*GOTO\\s+([A-Za-z0-9_]+|EXIT)\\s*$");
+
+    private boolean isSynthetic(Instruction ins) {
+        String t = (ins == null || ins.text == null) ? "" : ins.text.trim();
+        return t.startsWith("QUOTE ") || t.startsWith("JUMP_EQUAL_FUNCTION ");
+    }
+
+    private List<Instruction> tryExpandKnownSynthetic(Instruction ins) {
+        String text = (ins.text == null) ? "" : ins.text;
+
+        Matcher m = RX_QUOTE.matcher(text);
+        if (m.matches()) {
+            String dst  = m.group(1);
+            String name = m.group(2);
+            String args = m.group(3);
+            return expandQuote(dst, name, args);
         }
-        return null;
-    }
 
-    // QUOTE <dst> <- Func(<args...>)
-    // QUOTE <dst> <- Func(<args...>)
-    private List<Instruction> expandQuote(String dstVar, String funcName, String argsStr) {
-        List<Instruction> out = new ArrayList<>();
-
-        // Built-in fast path: Successor(Successor(...(x1)...))
-        // Works even if the XML doesn't define a 'Successor' function body.
-        if (funcName.equalsIgnoreCase("Successor")) {
-            // Count how many nested Successor(...) wrap x1 IN THE ARGUMENT,
-            // then add 1 for the OUTER Successor (the function itself).
-            int innerDepth = successorDepthOverX1(argsStr);  // -1 if not Successor^k(x1)
-            if (innerDepth >= 0) {
-                int totalIncrements = 1 + innerDepth;        // <-- outer + inner
-                // y <- x1
-                out.add(Instruction.parseFromText(null, dstVar + " <- x1", "B", 1));
-                // y <- y + 1   (repeat totalIncrements times)
-                for (int i = 0; i < totalIncrements; i++) {
-                    out.add(Instruction.parseFromText(null, dstVar + " <- " + dstVar + " + 1", "B", 1));
-                }
-                return out;
-            }
+        Matcher j = RX_JEF.matcher(text);
+        if (j.matches()) {
+            String var   = j.group(1);
+            String func  = j.group(2);
+            String args  = j.group(3);
+            String label = j.group(4);
+            return expandJumpEqualFunction(var, func, args, label);
         }
 
-        // Default: use the function library (if present)
-        evalFuncInto(VariableRef.parse(dstVar), funcName, parseArgs(argsStr), out, new Scratch());
-        return out;
+        return null; // not synthetic
     }
 
+    // -------------------------
+    // QUOTE / JEF expansion
+    // -------------------------
 
-
-    // JUMP_EQUAL_FUNCTION <var> == Func(<args...>) GOTO <label>
-    private List<Instruction> expandJumpEqualFunction(String var, String funcName, String argsStr, String target) {
-        List<Instruction> out = new ArrayList<>();
+    /** Expand a QUOTE dst <- Func(args) into basic instructions. */
+    private List<Instruction> expandQuote(String dst, String name, String argsStr) {
         Scratch scratch = new Scratch();
-        VariableRef tmp = VariableRef.parse("z" + scratch.nextZ());
-        // compute Func(args) into tmp
-        evalFuncInto(tmp, funcName, parseArgs(argsStr), out, scratch);
-        // if var == tmp goto target
-        String cmd = "IF " + var + " == " + tmp.name() + " GOTO " + target;
-        out.add(Instruction.parseFromText(null, cmd, "B", null));
+        List<Instruction> out = new ArrayList<>();
+        evalFuncInto(VariableRef.parse(dst), name, parseArgs(argsStr), out, scratch);
         return out;
     }
 
-    // Evaluate a function call into a target variable (y/xk/zk)
-    private void evalFuncInto(VariableRef target, String funcName, List<Arg> args, List<Instruction> out, Scratch scratch) {
-        List<Instruction> body = functions.get(funcName);
-        if (body == null)
-            throw new IllegalStateException("Unknown function: " + funcName);
+    /** Expand JUMP_EQUAL_FUNCTION var == Func(args) GOTO label into basic instructions. */
+// Program.java — replace the whole method
+    private List<Instruction> expandJumpEqualFunction(String var, String func, String argsStr, String label) {
+        Scratch scratch = new Scratch();
+        List<Instruction> out = new ArrayList<>();
 
-        // Bind x1..xN
+        // Evaluate Func(args) into a fresh temp (all emitted as BASIC instructions)
+        VariableRef tmp = VariableRef.parse("z" + scratch.nextZ());
+        evalFuncInto(tmp, func, parseArgs(argsStr), out, scratch);
+
+        // Final IF compares <var> to the computed temp and jumps;
+        // emit explicitly as BASIC with proper cycles.
+        String line = "IF " + var + " == " + tmp.name() + " GOTO " + label;
+        out.add(Instruction.parseFromText(null, line, "B", cyclesFor(line)));
+
+        return out;
+    }
+
+
+    /**
+     * Inline a function call into 'out', with proper variable/label remapping and EXIT handling.
+     *  - y in callee → 'target'
+     *  - x1..xN in callee → bound to caller args (Var or nested call)
+     *  - zN in callee → unique zk per inlining frame (no collisions)
+     *  - L#### labels remapped by adding a per-call base
+     *  - EXIT in callee → per-call local "return" label (L<labelBase+99>) placed after the inlined body
+     */
+    private void evalFuncInto(VariableRef target, String funcName, List<Arg> args,
+                              List<Instruction> out, Scratch scratch) {
+
+        List<Instruction> body = functions.get(funcName);
+        if (body == null) {
+            throw new IllegalStateException("Unknown function: " + funcName);
+        }
+
+        // Bind y and x1..xN
         Map<String, String> varMap = new HashMap<>();
-        // y inside function -> target
         varMap.put("y", target.name());
 
         int idx = 1;
@@ -169,62 +234,108 @@ public final class Program {
                 varMap.put(formal, va.v.name());
             } else if (a instanceof CallArg ca) {
                 VariableRef tmp = VariableRef.parse("z" + scratch.nextZ());
-                evalFuncInto(tmp, ca.func, ca.args, out, scratch); // emit code
+                evalFuncInto(tmp, ca.func, ca.args, out, scratch);     // inline nested call
                 varMap.put(formal, tmp.name());
             }
         }
 
-        // Remap internal z* to fresh ones
-        Map<String,String> zMap = new HashMap<>();
-        // Label remapping to avoid collisions
+        // Fresh locals/labels for this inlining frame
+        Map<String,String> zMap     = new HashMap<>();
         Map<String,String> labelMap = new HashMap<>();
-        int labelBase = scratch.nextLabelBase();
+        int labelBase = scratch.nextLabelBase(); // e.g., 1000, 2000, 3000,...
 
         for (Instruction fi : body) {
-            // Build a textual command with substituted variables & labels
+            // 1) remap label definition if present
             String newLabel = null;
             if (fi.label != null && !fi.label.isBlank()) {
                 newLabel = remapLabel(fi.label, labelBase, labelMap);
             }
 
-            String cmdText = fi.text;
-            // Substitute variables token-wise: y, x\d+, z\d+
-            cmdText = substituteVariables(cmdText, varMap, zMap, scratch);
-            // Substitute labels in GOTO / IF ... GOTO ...
-            cmdText = substituteLabelsInText(cmdText, labelBase, labelMap);
+            // 2) substitute variables and remap labels (including EXIT) within the text
+            String cmdText = (fi.text == null) ? "" : fi.text;
+            cmdText = substituteVariables(cmdText, varMap, zMap, scratch);   // xk, y, zk
+            cmdText = substituteLabelsInText(cmdText, labelBase, labelMap);  // Lk, EXIT
 
-            Instruction ni = Instruction.parseFromText(newLabel, cmdText, "B", null);
-            out.add(ni);
-        }
-    }
-
-    private static String substituteVariables(String text, Map<String,String> varMap, Map<String,String> zMap, Scratch scratch) {
-        // replace y / x\d+ / z\d+ tokens that appear as standalone identifiers
-        StringBuilder sb = new StringBuilder();
-        int i = 0;
-        while (i < text.length()) {
-            char c = text.charAt(i);
-            if (Character.isLetter(c)) {
-                int j = i+1;
-                while (j < text.length() && (Character.isLetterOrDigit(text.charAt(j)))) j++;
-                String tok = text.substring(i, j);
-                String repl = null;
-                if (tok.equals("y")) repl = varMap.getOrDefault("y", "y");
-                else if (tok.matches("x\\d+")) repl = varMap.getOrDefault(tok, tok);
-                else if (tok.matches("z\\d+")) {
-                    repl = zMap.computeIfAbsent(tok, k -> "z" + scratch.nextZ());
-                }
-                sb.append(repl == null ? tok : repl);
-                i = j;
-            } else {
-                sb.append(c);
-                i++;
+            // 3) allow QUOTE / JEF *inside* function bodies
+            Matcher mq = RX_QUOTE.matcher(cmdText);
+            if (mq.matches()) {
+                String dst     = mq.group(1);
+                String innerFn = mq.group(2);
+                String inner   = mq.group(3);
+                evalFuncInto(VariableRef.parse(dst), innerFn, parseArgs(inner), out, scratch);
+                continue;
             }
+
+            Matcher mj = RX_JEF.matcher(cmdText);
+            if (mj.matches()) {
+                String v       = mj.group(1);
+                String innerFn = mj.group(2);
+                String inner   = mj.group(3);
+                String tgt     = mj.group(4);
+                List<Instruction> blk = expandJumpEqualFunction(v, innerFn, inner, tgt);
+                // Remap labels/EXIT on the final IF line of the JEF block to this frame's local mapping
+                if (!blk.isEmpty()) {
+                    Instruction tail = blk.get(blk.size() - 1);
+                    String remapped = substituteLabelsInText(tail.text, labelBase, labelMap);
+                    blk.set(blk.size() - 1, Instruction.parseFromText(tail.label, remapped, "B", cyclesFor(remapped)));
+
+                }
+                out.addAll(blk);
+                continue;
+            }
+
+            // 4) default: treat as a basic instruction
+            out.add(Instruction.parseFromText(newLabel, cmdText, "B", cyclesFor(cmdText)));
+
         }
-        return sb.toString();
+
+        // 5) ensure the local return label exists right after the inlined body
+        String localExit = "L" + (labelBase + 99);
+        out.add(Instruction.parseFromText(localExit, target.name() + " <- " + target.name(), "B", 1));
     }
 
+    // -------------------------
+    // Variable + label rewriting
+    // -------------------------
+
+    private static String substituteVariables(String text,
+                                              Map<String,String> varMap,
+                                              Map<String,String> zMap,
+                                              Scratch scratch) {
+        if (text == null || text.isBlank()) return text;
+
+        // Replace y and x\d+
+        Pattern pXY = Pattern.compile("\\b(y|x\\d+)\\b");
+        Matcher mXY = pXY.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (mXY.find()) {
+            String tok = mXY.group(1);
+            String rep = varMap.get(tok);
+            if (rep == null) rep = tok; // unknown xN → keep
+            mXY.appendReplacement(sb, Matcher.quoteReplacement(rep));
+        }
+        mXY.appendTail(sb);
+        String afterXY = sb.toString();
+
+        // Replace z\d+ with per-frame unique z's
+        Pattern pZ = Pattern.compile("\\bz(\\d+)\\b");
+        Matcher mZ = pZ.matcher(afterXY);
+        StringBuffer sb2 = new StringBuffer();
+        while (mZ.find()) {
+            String old = "z" + mZ.group(1);
+            String rep = zMap.computeIfAbsent(old, k -> "z" + scratch.nextZ());
+            mZ.appendReplacement(sb2, Matcher.quoteReplacement(rep));
+        }
+        mZ.appendTail(sb2);
+
+        return sb2.toString();
+    }
+
+    /** Remap label tokens in text: L123 → L(base+123), EXIT → L(base+99). */
     private static String substituteLabelsInText(String text, int labelBase, Map<String,String> labelMap) {
+        if (text == null || text.isBlank()) return text;
+
+        // Remap L<digits>
         Pattern p = Pattern.compile("L(\\d+)");
         Matcher m = p.matcher(text);
         StringBuffer sb = new StringBuffer();
@@ -234,179 +345,194 @@ public final class Program {
             m.appendReplacement(sb, Matcher.quoteReplacement(repl));
         }
         m.appendTail(sb);
-        return sb.toString();
+
+        // Remap EXIT to a per-call local label
+        Pattern p2 = Pattern.compile("\\bEXIT\\b", Pattern.CASE_INSENSITIVE);
+        Matcher m2 = p2.matcher(sb.toString());
+        StringBuffer sb2 = new StringBuffer();
+        while (m2.find()) {
+            String repl = remapLabel("EXIT", labelBase, labelMap);
+            m2.appendReplacement(sb2, Matcher.quoteReplacement(repl));
+        }
+        m2.appendTail(sb2);
+
+        return sb2.toString();
     }
 
+    /** Map Lk → L(base+k); EXIT → L(base+99). */
     private static String remapLabel(String old, int base, Map<String,String> map) {
         if (old == null) return null;
         String key = old.toUpperCase(Locale.ROOT);
-        if (key.equals("EXIT")) return "EXIT";
-        if (!key.matches("L\\d+")) return key;
+
+        if (key.equals("EXIT")) return "L" + (base + 99);
+
+        if (!key.matches("L\\d+")) return old; // not an L#### token → leave as-is
+
         return map.computeIfAbsent(key, k -> {
             int n = Integer.parseInt(k.substring(1));
             return "L" + (base + n);
         });
     }
 
-    // ---------- Argument parsing ----------
-
-    // Examples: "Successor(x1)" -> 1, "Successor(Successor(x1))" -> 2, otherwise -1.
-    private static int successorDepthOverX1(String rhs) {
-        if (rhs == null) return -1;
-        String t = rhs.trim();
-        final String KW = "successor(";
-        int count = 0;
-        while (t.toLowerCase(java.util.Locale.ROOT).startsWith(KW) && t.endsWith(")")) {
-            count++;
-            t = t.substring(KW.length(), t.length() - 1).trim();
-        }
-        return t.equalsIgnoreCase("x1") ? count : -1;
-    }
-
-
-    private static final Pattern RX_QUOTE = Pattern.compile(
-            "^QUOTE\\s+([xyz]\\d*|y)\\s*<-\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)\\s*$",
-            Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern RX_JEF = Pattern.compile(
-            "^JUMP_EQUAL_FUNCTION\\s+([xyz]\\d*|y)\\s*==\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)\\s*GOTO\\s*(EXIT|L\\d+)\\s*$",
-            Pattern.CASE_INSENSITIVE);
-
-    private static List<Arg> parseArgs(String s) {
-        List<Arg> out = new ArrayList<>();
-        if (s == null) return out;
-        String str = s.trim();
-        if (str.isEmpty()) return out;
-
-        int i = 0;
-        while (i < str.length()) {
-            // skip commas
-            while (i < str.length() && (str.charAt(i) == ',' || Character.isWhitespace(str.charAt(i)))) i++;
-            if (i >= str.length()) break;
-
-            if (str.charAt(i) == '(') {
-                // parse a call: (FuncName, [args...])
-                int start = ++i;
-                int depth = 1;
-                StringBuilder buf = new StringBuilder();
-                while (i < str.length() && depth > 0) {
-                    char ch = str.charAt(i);
-                    if (ch == '(') { depth++; }
-                    else if (ch == ')') { depth--; if (depth==0) break; }
-                    buf.append(ch);
-                    i++;
-                }
-                // buf now contains "FuncName, maybeArgs"
-                String inside = buf.toString().trim();
-                String func = inside;
-                String innerArgs = "";
-                int comma = inside.indexOf(',');
-                if (comma >= 0) {
-                    func = inside.substring(0, comma).trim();
-                    innerArgs = inside.substring(comma+1).trim();
-                }
-                out.add(new CallArg(func, parseArgs(innerArgs)));
-                // skip the closing ')'
-                if (i < str.length() && str.charAt(i) == ')') i++;
-                // skip a trailing comma if exists
-                if (i < str.length() && str.charAt(i) == ',') i++;
-            } else {
-                // variable name token
-                int j = i+1;
-                while (j < str.length() && !Character.isWhitespace(str.charAt(j)) && str.charAt(j) != ',') j++;
-                String tok = str.substring(i, j).trim();
-                out.add(new VarArg(VariableRef.parse(tok)));
-                i = j;
-                if (i < str.length() && str.charAt(i) == ',') i++;
-            }
-        }
-        return out;
-    }
-
-    // ---------- Render helpers (unchanged) ----------
-
-    private Rendered render(List<Instruction> list, Map<Integer, Instruction> originMap) {
-        Map<String,Integer> labelToIndex = new HashMap<>();
-        for (int i=0;i<list.size();i++) {
-            String lbl = list.get(i).label;
-            if (lbl != null && !lbl.isBlank()) labelToIndex.putIfAbsent(lbl.toUpperCase(Locale.ROOT), i);
-        }
-        List<String> lines = new ArrayList<>();
-        List<List<String>> chains = new ArrayList<>();
-        int sumCycles = 0;
-        for (int i=0;i<list.size();i++) {
-            Instruction inst = list.get(i);
-            int num = i+1;
-            lines.add(inst.formatLine(num));
-            sumCycles += inst.cycles();
-
-            List<String> chain = new ArrayList<>();
-            Instruction parent = originMap.get(num);
-            while (parent != null) {
-                chain.add(parent.formatLine(-1));
-                parent = parent.origin;
-            }
-            chains.add(chain);
-        }
-        return new Rendered(name, list, labelToIndex, lines, chains, sumCycles);
-    }
-
-    public Set<VariableRef> referencedVariables() {
-        Set<VariableRef> vars = new TreeSet<>();
-        for (Instruction i : instructions) {
-            for (String tok : i.text.replaceAll("[^A-Za-z0-9]", " ").split("\\s+")) {
-                if (tok.isBlank()) continue;
-                String low = tok.toLowerCase(Locale.ROOT);
-                if (low.equals("y")) vars.add(VariableRef.y());
-                else if (low.matches("x\\d+")) vars.add(VariableRef.parse(low));
-                else if (low.matches("z\\d+")) vars.add(VariableRef.parse(low));
-            }
-        }
-        return vars;
-    }
-
-    public static final class Rendered {
-        public final String name;
-        public final List<Instruction> list;
-        public final Map<String,Integer> labelIndex;
-        public final List<String> lines;
-        public final List<List<String>> originChains;
-        public final int sumCycles;
-        Rendered(String name, List<Instruction> list, Map<String,Integer> labelIndex, List<String> lines,
-                 List<List<String>> originChains, int sumCycles) {
-            this.name = name; this.list = list; this.labelIndex = labelIndex; this.lines = lines;
-            this.originChains = originChains; this.sumCycles = sumCycles;
-        }
-    }
-
-    public Set<String> labelsUsed() {
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (Instruction i : instructions) {
-            if (i.label != null) {
-                String lbl = i.label.trim();
-                if (!lbl.isEmpty()) out.add(lbl);
-            }
-        }
-        return out;
-    }
-
-    // ---------- Tiny arg & scratch helpers ----------
-
-    private static abstract class Arg {}
-    private static final class VarArg extends Arg {
+    // -------------------------
+    // Argument node hierarchy
+    // -------------------------
+    private sealed interface Arg permits VarArg, CallArg {}
+    private static final class VarArg implements Arg {
         final VariableRef v;
         VarArg(VariableRef v) { this.v = v; }
     }
-    private static final class CallArg extends Arg {
+    private static final class CallArg implements Arg {
         final String func;
         final List<Arg> args;
         CallArg(String func, List<Arg> args) { this.func = func; this.args = args; }
     }
 
-    private static final class Scratch {
-        private int nextZ = 1;
-        private int nextLabel = 1000;
-        int nextZ() { return nextZ++; }
-        int nextLabelBase() { int b = nextLabel; nextLabel += 100; return b; }
+    // -------------------------
+    // Robust argument parsing
+    // -------------------------
+
+    /**
+     * Parse a comma-separated argument list into Arg nodes.
+     * Supports both:
+     *  - tuple form:  (FuncName, arg1, arg2, ...)
+     *  - call form:   FuncName(arg1, arg2, ...)
+     * And nested combinations like:
+     *  (Bigger_Equal_Than,z3,x2),(NOT,(EQUAL,z3,(CONST0)))
+     */
+    private List<Arg> parseArgs(String s) {
+        if (s == null) return List.of();
+        String src = s.trim();
+        if (src.isEmpty()) return List.of();
+
+        List<String> items = splitTopLevelByComma(src);
+        List<Arg> out = new ArrayList<>();
+
+        for (String raw : items) {
+            String it = raw.trim();
+            if (it.isEmpty()) continue;
+
+            // (1) Tuple form: (FuncName, args...)
+            if (it.charAt(0) == '(') {
+                int match = matchingParenPos(it, 0);
+                if (match == it.length() - 1) {
+                    String inner = it.substring(1, match).trim();
+                    int cut = firstTopLevelComma(inner);
+                    String name = (cut < 0 ? inner : inner.substring(0, cut)).trim();
+                    String rest = (cut < 0 ? ""    : inner.substring(cut + 1)).trim();
+                    out.add(new CallArg(name, rest.isEmpty() ? List.of() : parseArgs(rest)));
+                    continue;
+                }
+            }
+
+            // (2) Call form: FuncName(...)
+            int lp = it.indexOf('(');
+            if (lp > 0 && it.endsWith(")")) {
+                int match = matchingParenPos(it, lp);
+                if (match == it.length() - 1) {
+                    String name  = it.substring(0, lp).trim();
+                    String inner = it.substring(lp + 1, match).trim();
+                    out.add(new CallArg(name, inner.isEmpty() ? List.of() : parseArgs(inner)));
+                    continue;
+                }
+            }
+
+            // (3) Variable form
+            out.add(new VarArg(VariableRef.parse(it)));
+        }
+        return out;
     }
+
+    /** Split a string on commas that are at top level (not inside parentheses). */
+    private static List<String> splitTopLevelByComma(String s) {
+        List<String> out = new ArrayList<>();
+        int depth = 0;
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') { depth++; cur.append(c); }
+            else if (c == ')') { depth--; cur.append(c); }
+            else if (c == ',' && depth == 0) { out.add(cur.toString()); cur.setLength(0); }
+            else { cur.append(c); }
+        }
+        if (cur.length() > 0) out.add(cur.toString());
+        return out;
+    }
+
+    /** Return index of matching ')' for '(' at openPos; -1 if not found. */
+    private static int matchingParenPos(String s, int openPos) {
+        int depth = 0;
+        for (int i = openPos; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    /** First comma at top level (depth==0) or -1 if none. */
+    private static int firstTopLevelComma(String s) {
+        int depth = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth == 0) return i;
+        }
+        return -1;
+    }
+
+    // -------------------------
+    // Scratch: fresh z / label bases
+    // -------------------------
+
+    /** Per-expansion scratch counters to avoid collisions. */
+    private static final class Scratch {
+        private int zCounter = 1;
+        private int nextLabelBase = 1000; // grows by 1000 each call frame
+
+        int nextZ() { return zCounter++; }
+
+        /** Returns a fresh base (1000, 2000, 3000, ...) for remapping L#### labels per call frame. */
+        int nextLabelBase() {
+            int base = nextLabelBase;
+            nextLabelBase += 1000;
+            return base;
+        }
+    }
+
+    // -------------------------
+    // Helpers for console App
+    // -------------------------
+
+    private static List<String> toLines(List<Instruction> list) {
+        List<String> out = new ArrayList<>(list.size());
+        int i = 1;
+        for (Instruction ins : list) {
+            String lbl = (ins.label == null || ins.label.isBlank()) ? "" : (ins.label + ": ");
+            String txt = (ins.text == null) ? "" : ins.text;
+            out.add(String.format("%3d  %s%s", i++, lbl, txt));
+        }
+        return out;
+    }
+    private static int inferCycles(Instruction ins) {
+        if (ins == null || ins.text == null) return 1;
+        String t = ins.text.trim().toUpperCase(java.util.Locale.ROOT);
+        if (t.startsWith("IF ")) return 2;
+        return 1;
+    }
+
+    // Sum cycles without relying on a field on Instruction.
+// Heuristic: IF ... costs 2, everything else costs 1.
+    private static int sumCyclesOf(List<Instruction> list) {
+        int sum = 0;
+        for (Instruction ins : list) {
+            sum += inferCycles(ins);
+        }
+        return sum;
+    }
+
 }

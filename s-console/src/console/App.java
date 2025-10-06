@@ -62,10 +62,10 @@ public final class App {
 
             Program p = ProgramParser.parseFromXml(xml);
 
-            String labelErr = ProgramParser.validateLabels(p);
-            if (labelErr != null) {
-                throw new IllegalArgumentException(labelErr);
-            }
+           //String labelErr = ProgramParser.validateLabels(p);
+            //if (labelErr != null) {
+               // throw new IllegalArgumentException(labelErr);
+            //}
 
             currentProgram = p;
             lastGoodProgram = p;

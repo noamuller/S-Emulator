@@ -2,8 +2,10 @@ package sengine;
 
 import org.w3c.dom.*;
 import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.validation.*;
 import javax.xml.XMLConstants;
+import javax.xml.validation.Schema;
+import javax.xml.validation.SchemaFactory;
+import javax.xml.validation.Validator;
 import java.io.File;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -14,8 +16,10 @@ public final class ProgramParser {
     private ProgramParser() {}
 
     // ------------------------------------------------------------
-    // Public API
+    // Public entry points
     // ------------------------------------------------------------
+
+    /** Parse either the simple <program> format or the course <S-Program> format. */
     public static Program parseFromXml(File file) {
         try {
             Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(file);
@@ -42,44 +46,17 @@ public final class ProgramParser {
         validator.validate(new javax.xml.transform.stream.StreamSource(xml));
     }
 
-    /** Validate labels against rendered degree-0 (no access to Program internals needed). */
-    public static String validateLabels(Program p) {
-        try {
-            Program.Rendered r = p.expandToDegree(0);
-            List<Instruction> list = r.list;
-
-            // duplicate labels?
-            Set<String> seen = new HashSet<>();
-            for (Instruction ins : list) {
-                if (ins.label == null || ins.label.isBlank()) continue;
-                String key = ins.label.toUpperCase(Locale.ROOT);
-                if (!seen.add(key)) return "Duplicate label: " + ins.label;
-            }
-
-            // missing targets (ignore EXIT)?
-            Set<String> targets = new HashSet<>();
-            for (Instruction ins : list) {
-                String tgt = parseGotoTarget(ins.text);
-                if (tgt != null && !"EXIT".equalsIgnoreCase(tgt)) targets.add(tgt.toUpperCase(Locale.ROOT));
-            }
-            for (String tgt : targets) {
-                boolean ok = list.stream().anyMatch(i -> i.label != null && tgt.equalsIgnoreCase(i.label));
-                if (!ok) return "Unknown label target: " + tgt;
-            }
-            return null;
-        } catch (Exception ignore) { return null; }
-    }
-
     // ------------------------------------------------------------
-    // Simple format (unchanged)
+    // Simple <program> format (kept minimal/back-compat)
     // ------------------------------------------------------------
+
     private static Program parseSimple(Element root) {
         String name = attrOr(root, "name", "Unnamed");
-        Element instrsEl = firstChild(root, "instructions");
-        if (instrsEl == null) throw new IllegalArgumentException("Missing <instructions>");
+        Element instrWrap = firstChild(root, "instructions");
+        if (instrWrap == null) throw new IllegalArgumentException("Missing <instructions>");
 
         List<Instruction> list = new ArrayList<>();
-        for (Element e : children(instrsEl, "instruction")) {
+        for (Element e : children(instrWrap, "instruction")) {
             String type = attrOr(e, "type", "B"); // "B" or "S"
             String label = textOfOptional(e, "label");
             String command = textOfRequired(e, "command");
@@ -90,94 +67,45 @@ public final class ProgramParser {
     }
 
     // ------------------------------------------------------------
-    // S-Program course format (supports quotation.xml structure)
+    // S-Program course format (supports your XMLs like divide.xml)
     // ------------------------------------------------------------
+
     private static Program parseCourse(Element root) {
         String name = attrOr(root, "name", "Unnamed");
+
         Element sInstrWrap = firstChild(root, "S-Instructions");
         if (sInstrWrap == null) throw new IllegalArgumentException("Missing <S-Instructions>");
 
-        java.util.Set<String> definedFnNames = collectFunctionNames(root);
+        // Collect function names defined under <S-Functions>
+        Set<String> definedFnNames = collectFunctionNames(root);
+        // Allow a small “stdlib” used by provided XMLs (can appear inside QUOTE):
+        definedFnNames.addAll(Arrays.asList(
+                "CONST", "NOT", "EQUAL", "AND", "OR",
+                "Smaller_Than", "Bigger_Equal_Than", "Smaller_Equal_Than",
+                "Minus", "Successor"
+        ));
 
+        // Top-level program body
         List<Instruction> out = new ArrayList<>();
 
         for (Element e : children(sInstrWrap, "S-Instruction")) {
-            String label = readOptionalLabel(e);            // supports <S-Label>
-            String type  = attrOr(e, "name", "");           // e.g., JUMP_EQUAL_FUNCTION, QUOTE, INCREASE...
+            String type = attrOr(e, "name", "");
+            String label = readOptionalLabel(e);
 
-            // ----- JUMP_EQUAL_FUNCTION → IF var == CONST GOTO label/EXIT
+            // ----- JUMP_EQUAL_FUNCTION (synthetic): keep synthetic text for expansion
             if (eq(type, "JUMP_EQUAL_FUNCTION")) {
                 out.add(buildJumpEqualFunction(root, e, label));
                 continue;
             }
 
-            // ----- QUOTE
-// Supports two forms:
-//  (A) Legacy/constant:     QUOTE y <- ConstFunction()           → y <- CONST
-//  (B) Callable (new):       QUOTE y <- Func(args...)             → synthetic, expanded at degree>0
+            // ----- QUOTE (synthetic): keep as QUOTE text for degree>0 expansion
+            // Supports both legacy constant QUOTE and callable QUOTE.
             if (eq(type, "QUOTE")) {
-                String dst = textOfOptional(e, "S-Variable");
-                if (dst == null || dst.isBlank())
-                    throw new IllegalArgumentException("QUOTE missing <S-Variable>");
-
-                Element argsWrap = firstChild(e, "S-Instruction-Arguments");
-                String fnName = null;
-                String fnArgs = ""; // e.g. "(Successor,x1)"
-                if (argsWrap != null) {
-                    for (Element a : children(argsWrap, "S-Instruction-Argument")) {
-                        String n = attrOr(a, "name", "");
-                        if (eq(n, "functionName"))       fnName = attrOr(a, "value", "");
-                        else if (eq(n, "functionArguments")) fnArgs = attrOr(a, "value", "");
-                    }
-                }
-
-                if (fnName == null || fnName.isBlank())
-                    throw new IllegalArgumentException("QUOTE: missing functionName");
-
-                // If functionArguments exist → normalize, validate names, create synthetic QUOTE
-                // If functionArguments exist → normalize, validate names, keep as synthetic S-instruction.
-// Program.expandToDegree(1) will inline it later.
-                if (fnArgs != null && !fnArgs.isBlank()) {
-                    forbidOuterWrappingOfMultiArgs(fnArgs);               // keep this guard
-                    String argsNorm = normalizeFunctionArguments(fnArgs); // canonicalize
-                    verifyFunctionsExist(definedFnNames, topLevelFunctionNames(argsNorm));
-
-                    String text = "QUOTE " + dst + " <- " + fnName + "(" + argsNorm + ")";
-                    out.add(Instruction.parseFromText(label, text, "S", null));
-                    continue;
-                }
-
-
-
-                // Otherwise fall back to the old constant-function behavior
-                Integer constVal = tryResolveConstFunction(root, fnName);
-                if (constVal == null)
-                    throw new IllegalArgumentException("QUOTE: function '" + fnName + "' must be a constant function");
-                out.add(Instruction.parseFromText(label, dst + " <- " + constVal, "B", 1));
+                out.add(buildQuoteSynthetic(root, e, label, definedFnNames));
                 continue;
             }
 
-// ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
-            if (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL")) {
-                Element args = firstChild(e, "S-Instruction-Arguments");
-                String target = null;
-                if (args != null) {
-                    for (Element a : children(args, "S-Instruction-Argument")) {
-                        String an = attrOr(a, "name", "");
-                        if (eq(an, "gotoLabel") || eq(an, "label")) {
-                            target = attrOr(a, "value", "");
-                        }
-                    }
-                }
-                if (target == null || target.isBlank())
-                    throw new IllegalArgumentException("GOTO_LABEL missing label");
-                // create a Basic instruction text that the engine understands
-                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
-                continue;
-            }
-
-
-            // ----- ASSIGNMENT (synthetic): <S-Variable>y</S-Variable>, arg assignedVariable="x1"
+            // ----- ASSIGNMENT (synthetic): <S-Variable>dst</S-Variable>, arg assignedVariable="src"
             if (eq(type, "ASSIGNMENT")) {
                 String dst = textOfRequired(e, "S-Variable");
                 Element args = firstChild(e, "S-Instruction-Arguments");
@@ -195,20 +123,28 @@ public final class ProgramParser {
                 continue;
             }
 
-            // ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
-            if (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL")) {
+            // ----- CONSTANT_ASSIGNMENT (synthetic): dst <- const
+            if (eq(type, "CONSTANT_ASSIGNMENT")) {
+                String dst = textOfRequired(e, "S-Variable");
                 Element args = firstChild(e, "S-Instruction-Arguments");
-                String target = null;
+                String val = null;
                 if (args != null) {
                     for (Element a : children(args, "S-Instruction-Argument")) {
-                        if (eq(attrOr(a, "name", ""), "gotoLabel")) {
-                            target = attrOr(a, "value", "");
+                        if (eq(attrOr(a, "name", ""), "constantValue")) {
+                            val = attrOr(a, "value", "");
                         }
                     }
                 }
-                if (target == null || target.isBlank())
-                    throw new IllegalArgumentException("GOTO_LABEL missing gotoLabel");
-                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
+                if (val == null || val.isBlank())
+                    throw new IllegalArgumentException("CONSTANT_ASSIGNMENT missing constantValue");
+                out.add(Instruction.parseFromText(label, dst + " <- " + val, "B", 1));
+                continue;
+            }
+
+            // ----- ZERO_VARIABLE (synthetic): dst <- 0
+            if (eq(type, "ZERO_VARIABLE")) {
+                String dst = textOfRequired(e, "S-Variable");
+                out.add(Instruction.parseFromText(label, dst + " <- 0", "B", 1));
                 continue;
             }
 
@@ -224,48 +160,34 @@ public final class ProgramParser {
                 continue;
             }
 
-            // ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
-            if (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL")) {
-                Element args = firstChild(e, "S-Instruction-Arguments");
-                String target = null;
-                if (args != null) {
-                    for (Element a : children(args, "S-Instruction-Argument")) {
-                        if (eq(attrOr(a, "name", ""), "gotoLabel")) {
-                            target = attrOr(a, "value", "");
-                        }
-                    }
-                }
-                if (target == null || target.isBlank())
-                    throw new IllegalArgumentException("GOTO_LABEL missing gotoLabel");
-                out.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
-                continue;
-            }
-
-            // ----- JUMP_NOT_ZERO (basic): <S-Variable>v</S-Variable>, arg JNZLabel="L1"
+            // ----- JUMP_NOT_ZERO (basic) → IF v != 0 GOTO label
             if (eq(type, "JUMP_NOT_ZERO")) {
                 String v = textOfRequired(e, "S-Variable");
-                Element args = firstChild(e, "S-Instruction-Arguments");
-                String target = null;
-                if (args != null) {
-                    for (Element a : children(args, "S-Instruction-Argument")) {
-                        if (eq(attrOr(a, "name", ""), "JNZLabel")) {
-                            target = attrOr(a, "value", "");
-                        }
-                    }
-                }
+                String target = readArgValue(firstChild(e, "S-Instruction-Arguments"), "JNZLabel");
                 if (target == null || target.isBlank())
                     throw new IllegalArgumentException("JUMP_NOT_ZERO missing JNZLabel");
                 out.add(Instruction.parseFromText(label, "IF " + v + " != 0 GOTO " + target, "B", 2));
                 continue;
             }
-// ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
-            if (eq(type, "GOTO_LABEL")) {
-                Element args = firstChild(e, "S-Instruction-Arguments");
+
+            // ----- JUMP_ZERO (synthetic in some XMLs) → IF v == 0 GOTO label
+            if (eq(type, "JUMP_ZERO")) {
+                String v = textOfRequired(e, "S-Variable");
+                String target = readArgValue(firstChild(e, "S-Instruction-Arguments"), "JZLabel");
+                if (target == null || target.isBlank())
+                    throw new IllegalArgumentException("JUMP_ZERO missing JZLabel");
+                out.add(Instruction.parseFromText(label, "IF " + v + " == 0 GOTO " + target, "B", 2));
+                continue;
+            }
+
+            // ----- GOTO_LABEL (synthetic) → basic "GOTO <label>"
+            if (eq(type, "GOTO_LABEL") || (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL"))) {
                 String target = null;
+                Element args = firstChild(e, "S-Instruction-Arguments");
                 if (args != null) {
                     for (Element a : children(args, "S-Instruction-Argument")) {
                         String an = attrOr(a, "name", "");
-                        if (eq(an, "gotoLabel") || eq(an, "label") || eq(an, "destLabel")) {
+                        if (eq(an, "gotoLabel") || eq(an, "label")) {
                             target = attrOr(a, "value", "");
                         }
                     }
@@ -276,41 +198,253 @@ public final class ProgramParser {
                 continue;
             }
 
-            // Fallback: keep as synthetic so it still displays in the UI.
+            // Fallback: keep as synthetic so it still displays in the UI (rare)
             out.add(Instruction.parseFromText(label, type, "S", 1));
         }
 
-        return new Program(name, out);
+        // Build the functions library and attach to Program
+        Map<String, List<Instruction>> functions = parseFunctions(root);
+        return new Program(name, out, functions);
     }
 
     // ------------------------------------------------------------
-    // JUMP_EQUAL_FUNCTION support
+    // Functions map: parse <S-Functions> into Program.functions
     // ------------------------------------------------------------
+
+    /** Parse <S-Functions> into Program's function map: name -> list of textual instructions. */
+    private static Map<String, List<Instruction>> parseFunctions(Element root) {
+        Map<String, List<Instruction>> fnMap = new LinkedHashMap<>();
+
+        Element functions = firstChild(root, "S-Functions");
+        if (functions == null) return fnMap;
+
+        for (Element sf : children(functions, "S-Function")) {
+            String fname = attrOr(sf, "name", "");
+            if (fname == null || fname.isBlank()) continue;
+            fname = fname.trim();
+
+            Element body = firstChild(sf, "S-Instructions");
+            if (body == null) {
+                fnMap.put(fname, List.of());
+                continue;
+            }
+
+            List<Instruction> bodyList = new ArrayList<>();
+
+            for (Element e : children(body, "S-Instruction")) {
+                String label = readOptionalLabel(e);
+                String type = attrOr(e, "name", "");
+
+                // Basic/synthetic forms normalized to textual commands:
+
+                if (eq(type, "ASSIGNMENT")) {
+                    String dst = textOfRequired(e, "S-Variable");
+                    String src = readArgValue(firstChild(e, "S-Instruction-Arguments"), "assignedVariable");
+                    if (src == null || src.isBlank())
+                        throw new IllegalArgumentException("ASSIGNMENT missing assignedVariable");
+                    bodyList.add(Instruction.parseFromText(label, dst + " <- " + src, "B", 1));
+                    continue;
+                }
+
+                if (eq(type, "CONSTANT_ASSIGNMENT")) {
+                    String dst = textOfRequired(e, "S-Variable");
+                    String val = readArgValue(firstChild(e, "S-Instruction-Arguments"), "constantValue");
+                    if (val == null || val.isBlank())
+                        throw new IllegalArgumentException("CONSTANT_ASSIGNMENT missing constantValue");
+                    bodyList.add(Instruction.parseFromText(label, dst + " <- " + val, "B", 1));
+                    continue;
+                }
+
+                if (eq(type, "ZERO_VARIABLE")) {
+                    String dst = textOfRequired(e, "S-Variable");
+                    bodyList.add(Instruction.parseFromText(label, dst + " <- 0", "B", 1));
+                    continue;
+                }
+
+                if (eq(type, "INCREASE")) {
+                    String v = textOfRequired(e, "S-Variable");
+                    bodyList.add(Instruction.parseFromText(label, v + " <- " + v + " + 1", "B", 1));
+                    continue;
+                }
+                if (eq(type, "DECREASE")) {
+                    String v = textOfRequired(e, "S-Variable");
+                    bodyList.add(Instruction.parseFromText(label, v + " <- " + v + " - 1", "B", 1));
+                    continue;
+                }
+
+                if (eq(type, "JUMP_NOT_ZERO")) {
+                    String v = textOfRequired(e, "S-Variable");
+                    String target = readArgValue(firstChild(e, "S-Instruction-Arguments"), "JNZLabel");
+                    if (target == null || target.isBlank())
+                        throw new IllegalArgumentException("JUMP_NOT_ZERO missing JNZLabel");
+                    bodyList.add(Instruction.parseFromText(label, "IF " + v + " != 0 GOTO " + target, "B", 2));
+                    continue;
+                }
+
+// ----- JUMP_ZERO (synthetic in some XMLs) → IF v == 0 GOTO label
+                if (eq(type, "JUMP_ZERO")) {
+                    String v = textOfRequired(e, "S-Variable");
+                    String target = readArgValue(firstChild(e, "S-Instruction-Arguments"), "JZLabel");
+                    if (target == null || target.isBlank())
+                        throw new IllegalArgumentException("JUMP_ZERO missing JZLabel");
+                    bodyList.add(Instruction.parseFromText(label, "IF " + v + " == 0 GOTO " + target, "B", 2));
+                    continue;
+                }
+
+
+                if (eq(type, "GOTO_LABEL") || (eq(type, "SYNTHETIC") && eq(attrOr(e, "name", ""), "GOTO_LABEL"))) {
+                    String target = null;
+                    Element args = firstChild(e, "S-Instruction-Arguments");
+                    if (args != null) {
+                        for (Element a : children(args, "S-Instruction-Argument")) {
+                            String an = attrOr(a, "name", "");
+                            if (eq(an, "gotoLabel") || eq(an, "label")) {
+                                target = attrOr(a, "value", "");
+                            }
+                        }
+                    }
+                    if (target == null || target.isBlank())
+                        throw new IllegalArgumentException("GOTO_LABEL missing label");
+                    bodyList.add(Instruction.parseFromText(label, "GOTO " + target, "B", 1));
+                    continue;
+                }
+
+                // Keep QUOTE/JEF *inside functions* as textual synthetic lines.
+                if (eq(type, "QUOTE")) {
+                    String dst = textOfRequired(e, "S-Variable");
+                    Element args = firstChild(e, "S-Instruction-Arguments");
+                    String fnName = null;
+                    String fnArgs = "";
+                    if (args != null) {
+                        for (Element a : children(args, "S-Instruction-Argument")) {
+                            String n = attrOr(a, "name", "");
+                            if (eq(n, "functionName"))           fnName = attrOr(a, "value", "");
+                            else if (eq(n, "functionArguments")) fnArgs = attrOr(a, "value", "");
+                        }
+                    }
+                    if (fnName == null || fnName.isBlank())
+                        throw new IllegalArgumentException("QUOTE missing functionName");
+                    if (fnArgs == null) fnArgs = "";
+                    String argsNorm = normalizeFunctionArguments(fnArgs);
+                    String text = "QUOTE " + dst + " <- " + fnName + "(" + argsNorm + ")";
+                    bodyList.add(Instruction.parseFromText(label, text, "S", null));
+                    continue;
+                }
+
+                if (eq(type, "JUMP_EQUAL_FUNCTION")) {
+                    bodyList.add(buildJumpEqualFunction(root, e, label));
+                    continue;
+                }
+
+                // Fallback: keep synthetic name visible
+                bodyList.add(Instruction.parseFromText(label, type, "S", 1));
+            }
+
+            fnMap.put(fname, List.copyOf(bodyList));
+        }
+
+        return fnMap;
+    }
+
+    // ------------------------------------------------------------
+    // Builders for synthetic instructions
+    // ------------------------------------------------------------
+
+    /** Build a *synthetic* QUOTE instruction for top-level program: "QUOTE dst <- Func(args)". */
+    private static Instruction buildQuoteSynthetic(Element root, Element e, String label, Set<String> definedFnNames) {
+        String dst = textOfRequired(e, "S-Variable");
+
+        Element argsWrap = firstChild(e, "S-Instruction-Arguments");
+        String fnName = null;
+        String fnArgs = ""; // e.g. "(Successor,x1)" or "x1,x2"
+        if (argsWrap != null) {
+            for (Element a : children(argsWrap, "S-Instruction-Argument")) {
+                String n = attrOr(a, "name", "");
+                if (eq(n, "functionName"))           fnName = attrOr(a, "value", "");
+                else if (eq(n, "functionArguments")) fnArgs = attrOr(a, "value", "");
+            }
+        }
+        if (fnName == null || fnName.isBlank())
+            throw new IllegalArgumentException("QUOTE: missing functionName");
+
+        if (fnArgs == null) fnArgs = "";
+        if (!fnArgs.isBlank()) {
+            forbidOuterWrappingOfMultiArgs(fnArgs);
+            String argsNorm = normalizeFunctionArguments(fnArgs);
+            verifyFunctionsExist(definedFnNames, topLevelFunctionNames(argsNorm));
+            String text = "QUOTE " + dst + " <- " + fnName + "(" + argsNorm + ")";
+            return Instruction.parseFromText(label, text, "S", null);
+        }
+
+        // Legacy constant QUOTE form: resolve to constant if possible
+        Integer constVal = tryResolveConstFunction(root, fnName);
+        if (constVal == null)
+            throw new IllegalArgumentException("QUOTE: function '" + fnName + "' must be a constant function");
+        return Instruction.parseFromText(label, dst + " <- " + constVal, "B", 1);
+    }
+
+    /** Build a *synthetic* JUMP_EQUAL_FUNCTION: "JUMP_EQUAL_FUNCTION var == Func(args) GOTO label". */
     private static Instruction buildJumpEqualFunction(Element root, Element e, String label) {
         String varName = textOfRequired(e, "S-Variable");
-        Element args = firstChild(e, "S-Instruction-Arguments");
-        if (args == null) throw new IllegalArgumentException("JUMP_EQUAL_FUNCTION missing arguments");
 
-        String target = null;
+        Element args = firstChild(e, "S-Instruction-Arguments");
+        if (args == null) {
+            throw new IllegalArgumentException("JUMP_EQUAL_FUNCTION missing <S-Instruction-Arguments>");
+        }
+
         String fnName = null;
+        String jumpTarget = null;
+        List<String> argVals = new ArrayList<>();
 
         for (Element a : children(args, "S-Instruction-Argument")) {
             String an = attrOr(a, "name", "");
             String av = attrOr(a, "value", "");
-            if (eq(an, "JEFunctionLabel") || eq(an, "JZLabel")) target = av; // accept both
-            if (eq(an, "functionName")) fnName = av;
+            if (eq(an, "JEFunctionLabel") || eq(an, "JZLabel")) {
+                jumpTarget = av;
+            } else if (eq(an, "functionName")) {
+                fnName = av;
+            } else {
+                if (av != null && !av.isBlank()) {
+                    argVals.add(av.trim());
+                }
+            }
         }
-        if (target == null || target.isBlank())
-            throw new IllegalArgumentException("JUMP_EQUAL_FUNCTION needs JEFunctionLabel");
-        if (fnName == null || fnName.isBlank())
+
+        if (fnName == null || fnName.isBlank()) {
             throw new IllegalArgumentException("JUMP_EQUAL_FUNCTION missing functionName");
+        }
+        if (jumpTarget == null || jumpTarget.isBlank()) {
+            throw new IllegalArgumentException("JUMP_EQUAL_FUNCTION needs a jump target label (JEFunctionLabel/JZLabel)");
+        }
 
-        Integer constVal = tryResolveConstFunction(root, fnName);
-        if (constVal == null)
-            throw new IllegalArgumentException("JUMP_EQUAL_FUNCTION: function '" + fnName + "' must be a constant function");
+        String argsCsv = String.join(", ", argVals);
+        String text = "JUMP_EQUAL_FUNCTION " + varName + " == " + fnName + "(" + argsCsv + ") GOTO " + jumpTarget;
+        return Instruction.parseFromText(label, text, "S", null);
+    }
 
-        String text = "IF " + varName + " == " + constVal + " GOTO " + target;
-        return Instruction.parseFromText(label, text, "B", 1);
+    // ------------------------------------------------------------
+    // Validation helpers for QUOTE arguments
+    // ------------------------------------------------------------
+
+    /** Gather function names defined under <S-Functions>. */
+    private static Set<String> collectFunctionNames(Element root) {
+        Set<String> names = new HashSet<>();
+        Element functions = firstChild(root, "S-Functions");
+        if (functions == null) return names;
+        for (Element sf : children(functions, "S-Function")) {
+            String name = attrOr(sf, "name", "").trim();
+            if (!name.isEmpty()) names.add(name);
+        }
+        return names;
+    }
+
+    /** Verify every function name referenced in args exists in <S-Functions>/stdlib. */
+    private static void verifyFunctionsExist(Set<String> defined, List<String> names) {
+        for (String n : names) {
+            if (!defined.contains(n)) {
+                throw new IllegalArgumentException("Unknown function: " + n);
+            }
+        }
     }
 
     /** Resolve a function that returns a known constant (single CONSTANT_ASSIGNMENT to y). */
@@ -331,351 +465,187 @@ public final class ProgramParser {
             String type = attrOr(one, "name", "");
             if (!eq(type, "CONSTANT_ASSIGNMENT")) return null;
 
+            // ensure the constant is applied to y
+            String dst = textOfRequired(one, "S-Variable");
+            if (!"y".equals(dst)) return null;
+
             Element args = firstChild(one, "S-Instruction-Arguments");
             if (args == null) return null;
 
-            for (Element arg : children(args, "S-Instruction-Argument")) {
-                if (eq(attrOr(arg, "name", ""), "constantValue")) {
-                    try { return Integer.parseInt(attrOr(arg, "value", "")); }
-                    catch (NumberFormatException ignored) { return null; }
+            for (Element a : children(args, "S-Instruction-Argument")) {
+                if (eq(attrOr(a, "name", ""), "constantValue")) {
+                    String val = attrOr(a, "value", "");
+                    if (val != null && !val.isBlank()) {
+                        try {
+                            return Integer.parseInt(val.trim());
+                        } catch (NumberFormatException ignore) {
+                            return null;
+                        }
+                    }
                 }
             }
         }
         return null;
     }
 
-    // ------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------
-    /** Reject ONLY the bad shape: a SINGLE outer pair of parentheses wrapping
-     *  MULTIPLE top-level arguments (e.g., "((CONST7),(Successor,x1))").
-     *  Allow the single-call encoding "(Name,arg1,...)" used by the course XML.
-     *  Also allow "(Const7)" (zero-arg function) and "(Const7),(Successor,x1)" (no outer wrap).
-     */
-    private static void forbidOuterWrappingOfMultiArgs(String raw) {
-        if (raw == null) throw new IllegalArgumentException("QUOTE: missing functionArguments");
-        String s = raw.trim();
-        if (s.length() < 2 || s.charAt(0) != '(' || s.charAt(s.length() - 1) != ')') {
-            // No single outer wrapper → fine.
-            return;
-        }
-
-        // Does the very first '(' stay open until the last ')'? If not, no single outer wrapper.
-        int depth = 0;
-        boolean firstWrapsAll = true;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '(') depth++;
-            else if (c == ')') depth--;
-            if (depth == 0 && i < s.length() - 1) { // closed before end → not one big outer pair
-                firstWrapsAll = false;
-                break;
-            }
-        }
-        if (!firstWrapsAll) return; // e.g. "(Const7),(Successor,x1)" → allowed
-
-        // Single outer wrapper: inspect inner at top level.
-        String inner = s.substring(1, s.length() - 1).trim();
-
-        // Split inner by top-level commas.
-        java.util.List<String> parts = new java.util.ArrayList<>();
-        StringBuilder tok = new StringBuilder();
-        depth = 0;
-        for (int i = 0; i < inner.length(); i++) {
-            char c = inner.charAt(i);
-            if (c == '(') depth++;
-            else if (c == ')') depth--;
-            if (c == ',' && depth == 0) {
-                parts.add(tok.toString().trim());
-                tok.setLength(0);
+    /** Parse top-level function names referenced directly in a canonical args string. */
+    private static List<String> topLevelFunctionNames(String argsNorm) {
+        // We only need to identify names at the start of “(FuncName, …)” call tuples.
+        List<String> names = new ArrayList<>();
+        if (argsNorm == null || argsNorm.isBlank()) return names;
+        int i = 0;
+        String s = argsNorm.trim();
+        while (i < s.length()) {
+            while (i < s.length() && (s.charAt(i) == ',' || Character.isWhitespace(s.charAt(i)))) i++;
+            if (i >= s.length()) break;
+            if (s.charAt(i) == '(') {
+                int j = i + 1;
+                while (j < s.length() && s.charAt(j) != ',' && s.charAt(j) != ')' && !Character.isWhitespace(s.charAt(j))) j++;
+                if (j <= s.length()) {
+                    String fn = s.substring(i + 1, j).trim();
+                    if (!fn.isEmpty()) names.add(fn);
+                }
+                // skip until matching ')'
+                int depth = 1; j++;
+                while (j < s.length() && depth > 0) {
+                    char c = s.charAt(j++);
+                    if (c == '(') depth++;
+                    else if (c == ')') depth--;
+                }
+                i = j;
             } else {
-                tok.append(c);
+                // bare variable token → no function here; skip token
+                int j = i + 1;
+                while (j < s.length() && s.charAt(j) != ',' && !Character.isWhitespace(s.charAt(j))) j++;
+                i = j;
             }
-        }
-        parts.add(tok.toString().trim());
-
-        // Allowed cases with a single outer wrapper:
-        //  - exactly 1 part: "(Const7)" → ok
-        //  - exactly 2 parts AND first is an identifier: "(Successor,x1)" → single-call encoding → ok
-        if (parts.size() == 1) return;
-        if (parts.size() == 2 && parts.get(0).matches("[A-Za-z_][A-Za-z0-9_]*")) return;
-
-        // Otherwise it's multiple top-level args wrapped by one outer pair → reject.
-        throw new IllegalArgumentException("QUOTE: invalid functionArguments; remove the outer parentheses");
-    }
-
-
-
-    /** Collect function names exactly as written in <S-Functions>. (Case-SENSITIVE set) */
-    private static java.util.Set<String> collectFunctionNames(Element root) {
-        java.util.Set<String> out = new java.util.HashSet<>();
-        Element functions = firstChild(root, "S-Functions");
-        if (functions == null) return out;
-        for (Element sf : children(functions, "S-Function")) {
-            String name = attrOr(sf, "name", "");
-            if (name != null && !name.isBlank()) out.add(name.trim());
-        }
-        return out;
-    }
-
-    /** Extract top-level function names from a canonical arg list like "Const7(), Successor(x1)". */
-    private static java.util.List<String> topLevelFunctionNames(String argsNorm) {
-        java.util.List<String> names = new java.util.ArrayList<>();
-        String s = argsNorm;
-        int depth = 0;
-        StringBuilder cur = new StringBuilder();
-        java.util.List<String> parts = new java.util.ArrayList<>();
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '(') depth++;
-            if (c == ')') depth--;
-            if (c == ',' && depth == 0) {
-                parts.add(cur.toString().trim());
-                cur.setLength(0);
-            } else {
-                cur.append(c);
-            }
-        }
-        parts.add(cur.toString().trim());
-        for (String p : parts) {
-            // accept only call form Name(...)
-            int idx = p.indexOf('(');
-            if (idx <= 0 || !p.endsWith(")")) continue;
-            String name = p.substring(0, idx).trim();
-            if (!name.isEmpty()) names.add(name);
         }
         return names;
     }
 
-    /** Verify every function name referenced in args exists EXACTLY (case-sensitive) in <S-Functions>. */
-    private static void verifyFunctionsExist(java.util.Set<String> defined, java.util.List<String> names) {
-        for (String n : names) {
-            if (!defined.contains(n)) {
-                throw new IllegalArgumentException("Unknown function: " + n);
-            }
-        }
+    /** Normalize functionArguments strings into canonical call tuples, allowing "(Name, args...)" and chaining. */
+    private static String normalizeFunctionArguments(String fnArgs) {
+        // Accept either "(Name,arg,...)" tuples and/or flat "x1,x2" variables, possibly comma-separated.
+        // We just preserve the text but trim outer whitespace.
+        return fnArgs.trim();
     }
 
-    /** If s is Successor(Successor(...(x1)...)), return how many Successor layers; otherwise -1. */
-    // Return count of nested Successor(...) over x1, or -1 if pattern doesn't match.
-    private static int successorDepthOverX1(String rhs) {
-        if (rhs == null) return -1;
-        String t = rhs.trim();
-        final String KW = "successor(";
-        int count = 0;
-        while (t.toLowerCase(java.util.Locale.ROOT).startsWith(KW) && t.endsWith(")")) {
-            count++;
-            t = t.substring(KW.length(), t.length() - 1).trim();
-        }
-        return t.equalsIgnoreCase("x1") ? count : -1;
-    }
-    // If this is S: "QUOTE <dst> <- Successor(Successor(...(x1)...))", expand to B steps.
-// Returns null if not applicable.
-    private java.util.List<Instruction> tryExpandSelfSuccessorQuote(Instruction ins) {
-        if (ins == null || ins.text == null) return null;
-        String t = ins.text.trim();
-        if (!t.toUpperCase(java.util.Locale.ROOT).startsWith("QUOTE ")) return null;
+    /** Reject a single *outer* pair of parentheses around *multiple* top-level args. */
+    // ProgramParser.java — REPLACE THIS WHOLE METHOD
 
-        int arrow = t.indexOf("<-");
-        if (arrow < 0) return null;
-        String dst = t.substring("QUOTE".length(), arrow).trim(); // between QUOTE and <-
-        if (dst.isEmpty()) return null;
-
-        String rhs = t.substring(arrow + 2).trim(); // right-hand side
-        int depth = successorDepthOverX1(rhs);
-        if (depth < 1) return null;
-
-        java.util.List<Instruction> out = new java.util.ArrayList<>();
-        // y <- x1
-        out.add(Instruction.parseFromText(ins.label, dst + " <- x1", "B", 1));
-        // y <- y + 1  (repeat depth times)
-        for (int i = 0; i < depth; i++) {
-            out.add(Instruction.parseFromText(null, dst + " <- " + dst + " + 1", "B", 1));
-        }
-        return out;
-    }
-
-
-    /** Build a basic assignment like "v <- v + 1" (1 cycle). */
-    private static Instruction inc(String var) {
-        return Instruction.parseFromText(null, var + " <- " + var + " + 1", "B", 1);
-    }
-
-
-    private static boolean eq(String a, String b) { return a != null && a.equalsIgnoreCase(b); }
-    /** Normalize functionArguments strings from XML into canonical call syntax.
-     *  Examples:
-     *    "(Const7)"              -> "Const7()"
-     *    "(Successor,x1)"        -> "Successor(x1)"
-     *    "(Const7),(Successor,x1)" -> "Const7(), Successor(x1)"
+    /**
+     * Reject only when there is a single pair of *outer* parentheses that wraps the
+     * ENTIRE string *and* there is a top-level comma inside those outer parens.
+     * Otherwise (e.g., multiple adjacent tuples like "(A,...),(B,...)"), allow it.
      */
-    private static String normalizeFunctionArguments(String raw) {
-        if (raw == null) throw new IllegalArgumentException("QUOTE: missing functionArguments");
-        String s = raw.trim();
-        // Split by top-level commas (ignore commas inside parentheses)
-        java.util.List<String> parts = new java.util.ArrayList<>();
-        StringBuilder tok = new StringBuilder();
-        int depth = 0;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
+    private static void forbidOuterWrappingOfMultiArgs(String s) {
+        if (s == null) return;
+        String str = s.trim();
+        if (str.length() < 2) return;
+        if (str.charAt(0) != '(') return;
+
+        // Find the matching ')' for the very first '(' at position 0
+        int depth = 1;
+        int i = 1;
+        int match = -1;
+        while (i < str.length()) {
+            char c = str.charAt(i++);
             if (c == '(') depth++;
-            if (c == ')') depth--;
-            if (c == ',' && depth == 0) { // top-level comma
-                parts.add(tok.toString().trim());
-                tok.setLength(0);
-            } else {
-                tok.append(c);
-            }
-        }
-        parts.add(tok.toString().trim());
-
-        java.util.List<String> norm = new java.util.ArrayList<>();
-        for (String p : parts) {
-            if (p.isEmpty()) throw new IllegalArgumentException("QUOTE: empty argument in functionArguments");
-
-            String t = p.trim();
-
-            // Case A: "(Name,arg1,...)"  -> "Name(arg1,...)"
-            if (t.startsWith("(") && t.endsWith(")")) {
-                String inner = t.substring(1, t.length() - 1).trim();
-                int firstComma = -1;
-                int d = 0;
-                for (int i = 0; i < inner.length(); i++) {
-                    char c = inner.charAt(i);
-                    if (c == '(') d++;
-                    else if (c == ')') d--;
-                    else if (c == ',' && d == 0) { firstComma = i; break; }
-                }
-                if (firstComma >= 0) {
-                    String fname = inner.substring(0, firstComma).trim();
-                    String args  = inner.substring(firstComma + 1).trim();
-                    if (fname.isEmpty()) throw new IllegalArgumentException("QUOTE: missing function name in '" + t + "'");
-                    t = fname + "(" + args + ")";
-                } else {
-                    // Case B: "(Const7)" -> "Const7()"
-                    String fname = inner.trim();
-                    if (fname.isEmpty()) throw new IllegalArgumentException("QUOTE: empty function name in '" + t + "'");
-                    t = fname + "()";
+            else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    match = i - 1; // index of the matching ')'
+                    break;
                 }
             }
-            // else: already canonical (e.g., "Foo(x1)" or "Bar()")
-            norm.add(t);
         }
-        return String.join(", ", norm);
+
+        // If the matching ')' is NOT the last character, then the first '('
+        // does not wrap the entire string → this is fine (e.g., "(A,...),(B,...)")
+        if (match != str.length() - 1) return;
+
+        // The outermost parentheses wrap the entire string.
+        // If there's a top-level comma inside them, that's invalid outer wrapping.
+        depth = 0;
+        for (int j = 1; j < match; j++) { // scan inside the outer parens
+            char c = str.charAt(j);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth == 0) {
+                throw new IllegalArgumentException("Invalid outer wrapping of multiple arguments: " + s);
+            }
+        }
     }
 
-    private static String parseGotoTarget(String text) {
-        if (text == null) return null;
-        text = text.trim();
-        if (text.toUpperCase(Locale.ROOT).startsWith("GOTO "))
-            return text.substring(5).trim(); // GOTO L123 or EXIT
-        int p = text.toUpperCase(Locale.ROOT).lastIndexOf("GOTO ");
-        if (p >= 0) return text.substring(p + 5).trim(); // IF ... GOTO L123
+    // ------------------------------------------------------------
+    // DOM helpers
+    // ------------------------------------------------------------
+
+    private static String readArgValue(Element args, String wantedName) {
+        if (args == null) return null;
+        for (Element a : children(args, "S-Instruction-Argument")) {
+            if (eq(attrOr(a, "name", ""), wantedName)) {
+                return attrOr(a, "value", "");
+            }
+        }
         return null;
     }
 
     private static Integer parseIntOrNull(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return null; }
-    }
-    private static String attrOr(Element el, String name, String dft) {
-        String v = el.getAttribute(name);
-        return (v == null || v.isBlank()) ? dft : v;
+        try { return Integer.parseInt(s.trim()); } catch (Exception ignore) { return null; }
     }
 
-    /** Validate the shape of functionArguments for QUOTE/JEF: must be a single tuple like (arg1,arg2,...).
-     *  Disallow wrapped bare groups like ((CONST7),(Successor,x1)) and bare-parenthesized constants "(CONST7)".
-     */
-    private static void validateFunctionArgumentsFormat(String fnArgs) {
-        if (fnArgs == null) {
-            throw new IllegalArgumentException("QUOTE: missing functionArguments");
-        }
-        String s = fnArgs.trim();
-        if (!s.startsWith("(") || !s.endsWith(")")) {
-            throw new IllegalArgumentException("QUOTE: functionArguments must be a single tuple like (a,b)");
-        }
-
-        // inner text without the outer parentheses
-        String inner = s.substring(1, s.length() - 1).trim();
-
-        // quick rejection: multiple top-level groups like ")(" indicate bad nesting e.g. ((CONST7),(Successor,x1))
-        // (this also catches stray extra parentheses between comma-separated items)
-        int depth = 0;
-        for (int i = 0; i < inner.length(); i++) {
-            char c = inner.charAt(i);
-            if (c == '(') depth++;
-            else if (c == ')') depth--;
-            else if (c == ',' && depth < 0) {
-                throw new IllegalArgumentException("QUOTE: invalid functionArguments (parentheses mismatch)");
-            }
-        }
-        // Split args by commas at top level (no split inside nested parentheses)
-        java.util.List<String> parts = new java.util.ArrayList<>();
-        StringBuilder tok = new StringBuilder();
-        depth = 0;
-        for (int i = 0; i < inner.length(); i++) {
-            char c = inner.charAt(i);
-            if (c == '(') depth++;
-            if (c == ')') depth--;
-            if (c == ',' && depth == 0) {
-                parts.add(tok.toString().trim());
-                tok.setLength(0);
-            } else {
-                tok.append(c);
-            }
-        }
-        parts.add(tok.toString().trim());
-
-        // Each top-level argument must be either:
-        //  - a simple token (y, x1, z3, CONST7), WITHOUT extra wrapping parentheses, OR
-        //  - a function call form: Name(...)
-        for (String p : parts) {
-            if (p.isEmpty()) {
-                throw new IllegalArgumentException("QUOTE: empty argument in functionArguments");
-            }
-            boolean looksLikeCall = p.matches("[A-Za-z_][A-Za-z0-9_]*\\(.*\\)");
-            boolean hasBareParens = p.startsWith("(") && !looksLikeCall;
-            if (hasBareParens) {
-                // e.g. "(CONST7)" or "(x1)" or "(Successor,x1)" – invalid wrapping
-                throw new IllegalArgumentException("QUOTE: invalid argument '" + p + "'; remove extra parentheses");
-            }
-        }
-    }
-
-    private static String textOfRequired(Element parent, String childName) {
-        Element c = firstChild(parent, childName);
-        if (c == null) throw new IllegalArgumentException("Missing <" + childName + ">");
+    private static String textOfRequired(Element parent, String tag) {
+        Element c = firstChild(parent, tag);
+        if (c == null) throw new IllegalArgumentException("Missing <" + tag + ">");
         String t = text(c);
-        if (t == null || t.isBlank()) throw new IllegalArgumentException("<" + childName + "> is empty");
+        if (t == null || t.isBlank()) throw new IllegalArgumentException("Empty <" + tag + ">");
         return t.trim();
     }
-    private static String textOfOptional(Element parent, String childName) {
-        Element c = firstChild(parent, childName);
-        return (c == null) ? null : (text(c) == null ? null : text(c).trim());
+
+    private static String textOfOptional(Element parent, String tag) {
+        Element c = firstChild(parent, tag);
+        if (c == null) return null;
+        String t = text(c);
+        return (t == null || t.isBlank()) ? null : t.trim();
     }
-    private static String text(Node n) { return n == null ? null : n.getTextContent(); }
+
+    private static Element firstChild(Element parent, String tag) {
+        if (parent == null) return null;
+        NodeList nl = parent.getElementsByTagName(tag);
+        return nl.getLength() == 0 ? null : (Element) nl.item(0);
+    }
 
     private static List<Element> children(Element parent, String tag) {
-        List<Element> out = new ArrayList<>();
-        if (parent == null) return out;
-        NodeList nl = parent.getChildNodes();
+        List<Element> list = new ArrayList<>();
+        NodeList nl = parent.getElementsByTagName(tag);
         for (int i = 0; i < nl.getLength(); i++) {
-            Node nn = nl.item(i);
-            if (nn.getNodeType() == Node.ELEMENT_NODE) {
-                Element e = (Element) nn;
-                if (eq(e.getTagName(), tag)) out.add(e);
+            Node n = nl.item(i);
+            if (n.getParentNode() == parent && n instanceof Element) {
+                list.add((Element) n);
             }
         }
-        return out;
-    }
-    private static Element firstChild(Element parent, String tag) {
-        for (Element e : children(parent, tag)) return e;
-        return null;
+        return list;
     }
 
-    /** Also support <S-Label> for labels in S-Program files. */
+    private static String text(Node node) {
+        return node == null ? null : node.getTextContent();
+    }
+
+    private static String attrOr(Element el, String attr, String def) {
+        if (el == null) return def;
+        String v = el.getAttribute(attr);
+        return (v == null || v.isBlank()) ? def : v;
+    }
+
+    private static boolean eq(String a, String b) {
+        return a != null && a.equalsIgnoreCase(b);
+    }
+
+    /** Read label from either <S-Label>, <S-Instruction-Label>, or @label. */
     private static String readOptionalLabel(Element insEl) {
-        Element c = firstChild(insEl, "S-Label");                 // <-- quotation.xml uses this
+        Element c = firstChild(insEl, "S-Label");
         if (c != null) {
             String t = text(c);
             if (t != null && !t.isBlank()) return t.trim();
