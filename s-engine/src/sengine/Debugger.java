@@ -64,7 +64,7 @@ public final class Debugger {
         prevVars.clear();
         prevVars.putAll(vars);
 
-        // dispatch (same regex set as Runner)
+        // dispatch (generic identifiers + QUOTE + JEF)
         Matcher m;
 
         if ((m = RX_GOTO.matcher(text)).matches()) {
@@ -109,6 +109,26 @@ public final class Debugger {
             String dst = m.group(1); set(dst, 0); pc++; return snapshotChanged();
         }
 
+        // -------- QUOTE dst <- <expr> --------
+        if ((m = RX_QUOTE.matcher(text)).matches()) {
+            String dst = m.group(1);
+            String expr = m.group(2);
+            int val = evalExpr(expr);
+            set(dst, val);
+            pc++;
+            return snapshotChanged();
+        }
+
+        // -------- JUMP_EQUAL_FUNCTION v == <expr> GOTO Lx --------
+        if ((m = RX_JEF.matcher(text)).matches()) {
+            String v = m.group(1);
+            String expr = m.group(2);
+            String target = m.group(3);
+            int val = evalExpr(expr);
+            if (get(v) == val) jump(target); else pc++;
+            return snapshotChanged();
+        }
+
         // Unknown → just step to avoid lockup
         pc++;
         return snapshotChanged();
@@ -140,15 +160,136 @@ public final class Debugger {
         return new LinkedHashMap<>(m);
     }
 
-    // same regexes used by Runner
-    private static final Pattern RX_GOTO = Pattern.compile("^GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_IF_EQ_ZERO = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*==\\s*0\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_IF_NE_ZERO = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*!=\\s*0\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_IF_EQ_VAR  = Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*==\\s*([xyz]\\d*|y)\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_IF_EQ_CONST= Pattern.compile("^IF\\s+([xyz]\\d*|y)\\s*==\\s*(\\d+)\\s+GOTO\\s+(EXIT|L\\d+)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_INC        = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*\\1\\s*\\+\\s*1$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_DEC        = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*\\1\\s*-\\s*1$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_ASSIGN_VAR = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*([xyz]\\d*|y)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_ASSIGN_CONST=Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*(\\d+)$", Pattern.CASE_INSENSITIVE);
-    private static final Pattern RX_ZERO       = Pattern.compile("^([xyz]\\d*|y)\\s*<-\\s*0$", Pattern.CASE_INSENSITIVE);
+    /* ===========================
+       Expr evaluator (call + tuple)
+       =========================== */
+
+    private static final Pattern RX_CALL = Pattern.compile("^([A-Za-z][A-Za-z0-9_]*)\\((.*)\\)$");
+
+    private int evalExpr(String s) {
+        if (s == null) return 0;
+        String t = s.trim();
+        if (t.isEmpty()) return 0;
+
+        // 1) Normal call: Name(arg,...)
+        Matcher call = RX_CALL.matcher(t);
+        if (call.matches()) {
+            String fname = call.group(1);
+            String args = call.group(2);
+            List<String> parts = splitTopLevel(args);
+            List<Integer> evals = new ArrayList<>(parts.size());
+            for (String p : parts) evals.add(evalExpr(p));
+            return apply(fname, evals);
+        }
+
+        // 2) Tuple form: (Name,arg,...)  ← used by your XMLs
+        if (t.charAt(0) == '(' && t.charAt(t.length()-1) == ')') {
+            String inner = t.substring(1, t.length()-1).trim();
+            if (!inner.isEmpty()) {
+                List<String> parts = splitTopLevel(inner);
+                if (!parts.isEmpty()) {
+                    String fname = parts.get(0).trim();
+                    List<Integer> evals = new ArrayList<>();
+                    for (int i = 1; i < parts.size(); i++) evals.add(evalExpr(parts.get(i)));
+                    return apply(fname, evals);
+                }
+            }
+            return 0;
+        }
+
+        // 3) Bare number
+        if (t.chars().allMatch(Character::isDigit)) {
+            try { return Integer.parseInt(t); } catch (Exception ignore) { return 0; }
+        }
+
+        // 4) Bare identifier (variable)
+        if (Character.isLetter(t.charAt(0))) {
+            return get(t);
+        }
+
+        return 0;
+    }
+
+    /** Split by commas at top-level (balanced parentheses). */
+    private static List<String> splitTopLevel(String s) {
+        List<String> out = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        int depth = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '(') { depth++; cur.append(c); }
+            else if (c == ')') { depth--; cur.append(c); }
+            else if (c == ',' && depth == 0) {
+                out.add(cur.toString().trim());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
+        }
+        if (cur.length() > 0) out.add(cur.toString().trim());
+        if (out.size() == 1 && out.get(0).isEmpty()) return List.of();
+        return out;
+    }
+
+    /** Apply the course stdlib used in your XMLs. */
+    private int apply(String name, List<Integer> a) {
+        String n = name.trim();
+
+        // CONST0 (with or without parens/tuple)
+        if (n.equalsIgnoreCase("CONST0")) return 0;
+
+        // Successor(x) := x + 1
+        if (n.equalsIgnoreCase("Successor")) return Math.max(0, (a.size() >= 1 ? a.get(0) : 0) + 1);
+
+        // Minus(a,b) := max(0, a - b)
+        if (n.equalsIgnoreCase("Minus")) return Math.max(0, (a.size() >= 1 ? a.get(0) : 0) - (a.size() >= 2 ? a.get(1) : 0));
+
+        // Smaller_Than(a,b) → 1 if a<b else 0
+        if (n.equalsIgnoreCase("Smaller_Than")) return (a.size() >= 2 && a.get(0) < a.get(1)) ? 1 : 0;
+
+        // Bigger_Equal_Than(a,b) → 1 if a>=b else 0
+        if (n.equalsIgnoreCase("Bigger_Equal_Than")) return (a.size() >= 2 && a.get(0) >= a.get(1)) ? 1 : 0;
+
+        // Smaller_Equal_Than(a,b) → 1 if a<=b else 0
+        if (n.equalsIgnoreCase("Smaller_Equal_Than")) return (a.size() >= 2 && a.get(0) <= a.get(1)) ? 1 : 0;
+
+        // NOT(x) → 1 if x==0 else 0 (boolean 0/1)
+        if (n.equalsIgnoreCase("NOT")) return (a.size() >= 1 && a.get(0) == 0) ? 1 : 0;
+
+        // EQUAL(a,b) → 1 if equal else 0
+        if (n.equalsIgnoreCase("EQUAL")) return (a.size() >= 2 && Objects.equals(a.get(0), a.get(1))) ? 1 : 0;
+
+        // AND(a,b,...) → 1 if all non-zero else 0
+        if (n.equalsIgnoreCase("AND")) {
+            for (int v : a) if (v == 0) return 0;
+            return 1;
+        }
+
+        // OR(a,b,...) → 1 if any non-zero else 0
+        if (n.equalsIgnoreCase("OR")) {
+            for (int v : a) if (v != 0) return 1;
+            return 0;
+        }
+
+        // Unknown function → 0 (conservative)
+        return 0;
+    }
+
+    // -------- Patterns (generic identifiers) --------
+    private static final String VAR = "([A-Za-z][A-Za-z0-9_]*)";
+    private static final String LABEL = "(EXIT|L\\d+)";
+
+    private static final Pattern RX_GOTO        = Pattern.compile("^GOTO\\s+" + LABEL + "$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_IF_EQ_ZERO  = Pattern.compile("^IF\\s+" + VAR + "\\s*==\\s*0\\s+GOTO\\s+" + LABEL + "$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_IF_NE_ZERO  = Pattern.compile("^IF\\s+" + VAR + "\\s*!=\\s*0\\s+GOTO\\s+" + LABEL + "$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_IF_EQ_VAR   = Pattern.compile("^IF\\s+" + VAR + "\\s*==\\s*" + VAR + "\\s+GOTO\\s+" + LABEL + "$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_IF_EQ_CONST = Pattern.compile("^IF\\s+" + VAR + "\\s*==\\s*(\\d+)\\s+GOTO\\s+" + LABEL + "$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_INC         = Pattern.compile("^" + VAR + "\\s*<-\\s*\\1\\s*\\+\\s*1$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_DEC         = Pattern.compile("^" + VAR + "\\s*<-\\s*\\1\\s*-\\s*1$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_ASSIGN_VAR  = Pattern.compile("^" + VAR + "\\s*<-\\s*" + VAR + "$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_ASSIGN_CONST= Pattern.compile("^" + VAR + "\\s*<-\\s*(\\d+)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_ZERO        = Pattern.compile("^" + VAR + "\\s*<-\\s*0$", Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern RX_QUOTE       = Pattern.compile("^QUOTE\\s+" + VAR + "\\s*<-\\s*(.+)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RX_JEF         = Pattern.compile("^JUMP_EQUAL_FUNCTION\\s+" + VAR + "\\s*==\\s*(.+)\\s+GOTO\\s+" + LABEL + "$", Pattern.CASE_INSENSITIVE);
 }
