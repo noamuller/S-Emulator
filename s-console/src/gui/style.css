@@ -1,14 +1,14 @@
-/* Minimal, Modena-like – no chunky gradients, tight paddings */
+
 .root {
     -fx-font-family: "Segoe UI", "Roboto", "Noto Sans", "Arial", sans-serif;
-    -fx-font-size: 12px;                 /* smaller = not fat */
+    -fx-font-size: 12px;
 }
 
-/* Toolbar: flat, thin */
+
 .tool-bar {
     -fx-padding: 4 6;
     -fx-spacing: 6;
-    -fx-background-color: -fx-background;   /* use default Modena bg */
+    -fx-background-color: -fx-background;
     -fx-border-color: -fx-box-border;
     -fx-border-width: 0 0 1 0;
 }
@@ -23,18 +23,18 @@
     -fx-padding: 2 6 2 6;
 }
 
-/* Loaded path field: subtle */
+
 #loadedPathField {
     -fx-background-insets: 0;
     -fx-background-radius: 4;
 }
 
-/* Table: default Modena look with just a touch of spacing */
+
 .table-view {
     -fx-padding: 2;
 }
 
-/* Header: keep bold; size is auto-scaled in controller */
+
 .table-view .column-header {
     -fx-padding: 4 6;
 }
@@ -43,49 +43,49 @@
     -fx-wrap-text: true;
 }
 
-/* Rows compact */
+
 .table-cell { -fx-padding: 4 6; }
 
-/* Optional: very light row zebra */
+
 .table-row-cell:odd { -fx-background-color: rgba(0,0,0,0.015); }
 
-/* Muted helper class (kept, harmless) */
+
 .muted { -fx-opacity: 0.7; }
 .table-row-cell:selected {
-    -fx-background-color: #fff2a8;   /* soft yellow */
+    -fx-background-color: #fff2a8;
     -fx-background-insets: 0, 1 0 0 0, 2 0 0 0;
     -fx-text-fill: -fx-text-inner-color;
 }
-/* uniform, compact rows */
+
 .table-view .table-row-cell {
     -fx-cell-size: 22px;
     -fx-padding: 0 0 0 0;
 }
 .table-view .table-cell {
-    -fx-padding: 0 8 0 8;   /* no vertical padding */
+    -fx-padding: 0 8 0 8;
     -fx-wrap-text: false;
 }
-/* optional: subtle highlight of the selected (current PC) row */
+
 .table-view .table-row-cell:selected {
     -fx-background-color: #fff5b0;
     -fx-background-insets: 0;
 }
-/* Uniform compact rows (no extra gaps every other line) */
+
 .table-view .virtual-flow .clipped-container .sheet .table-row-cell {
     -fx-cell-size: 22px;
     -fx-padding: 0 0 0 0;
 }
 .table-view .table-cell {
-    -fx-padding: 0 8 0 8;  /* horizontal padding only */
+    -fx-padding: 0 8 0 8;
     -fx-wrap-text: false;
 }
-/* Force uniform row height — no alternating gaps */
+
 .table-view .virtual-flow .clipped-container .sheet .table-row-cell {
     -fx-cell-size: 22px;
     -fx-padding: 0 0 0 0;
 }
 .table-view .table-cell {
-    -fx-padding: 0 8 0 8;  /* horizontal only */
+    -fx-padding: 0 8 0 8;
     -fx-wrap-text: false;
 }
 

@@ -7,11 +7,7 @@ import java.io.File;
 import java.util.List;
 import java.util.Scanner;
 
-/**
- * Minimal console shell for S-Emulator, updated for the v2 parser.
- * Focus: load XML, view program, preview expansion degree (0/1).
- * For תרגיל 2, execution + debug/history are handled in the GUI.
- */
+
 public final class App {
 
     private static Program currentProgram = null;
@@ -27,8 +23,8 @@ public final class App {
                 case 1 -> cmdLoadXml();
                 case 2 -> cmdShowProgram();
                 case 3 -> cmdExpand();
-                case 4 -> cmdRun();      // placeholder: direct users to GUI
-                case 5 -> cmdHistory();  // placeholder: direct users to GUI
+                case 4 -> cmdRun();
+                case 5 -> cmdHistory();
                 case 6 -> { System.out.println("Bye!"); return; }
                 default -> System.out.println("Invalid choice. Please select 1..6.");
             }
@@ -45,16 +41,16 @@ public final class App {
         System.out.println("(6) Exit");
     }
 
-    // ---------- Actions ----------
 
-    /** Updated to the new parser API (with optional XSD validation if present). */
+
+
     private static void cmdLoadXml() {
         System.out.print("Enter full path to XML file: ");
         String path = sc.nextLine().trim();
         File xml = new File(path);
 
         try {
-            // OPTIONAL: validate if S-Emulator-v2.xsd exists next to where you run.
+
             File xsd = new File("S-Emulator-v2.xsd");
             if (xsd.exists()) {
                 ProgramParser.validateWithXsd(xml, xsd);
@@ -62,10 +58,7 @@ public final class App {
 
             Program p = ProgramParser.parseFromXml(xml);
 
-           //String labelErr = ProgramParser.validateLabels(p);
-            //if (labelErr != null) {
-               // throw new IllegalArgumentException(labelErr);
-            //}
+
 
             currentProgram = p;
             lastGoodProgram = p;
@@ -81,7 +74,7 @@ public final class App {
         }
     }
 
-    /** Prints the unexpanded listing (degree 0). */
+
     private static void cmdShowProgram() {
         if (currentProgram == null) {
             System.out.println("No program loaded.");
@@ -94,7 +87,7 @@ public final class App {
         System.out.println("Total cycles (sum of listed): " + r.sumCycles);
     }
 
-    /** Lets you preview the expanded listing for degree 0/1. */
+
     private static void cmdExpand() {
         if (currentProgram == null) {
             System.out.println("No program loaded.");
@@ -135,11 +128,11 @@ public final class App {
     }
 
     private static void cmdRun() {
-        System.out.println("For תרגיל 2, please use the GUI to Run / Debug.");
+        System.out.println("please use the GUI to Run / Debug.");
     }
 
     private static void cmdHistory() {
-        System.out.println("For תרגיל 2, please use the GUI to view History/Statistics.");
+        System.out.println("please use the GUI to view History/Statistics.");
     }
 
     // ---------- Small helpers ----------

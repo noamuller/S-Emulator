@@ -4,15 +4,15 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Single-step debugger over a rendered program. */
+
 public final class Debugger {
 
     public static final class Snapshot {
-        public final int pc;                 // 0-based; -1 when halted
+        public final int pc;
         public final int cycles;
         public final boolean halted;
         public final LinkedHashMap<String,Integer> vars;
-        public final Map<String,Integer> changed; // only vars changed by the *last* step
+        public final Map<String,Integer> changed;
         Snapshot(int pc, int cycles, boolean halted,
                  LinkedHashMap<String,Integer> vars, Map<String,Integer> changed) {
             this.pc = pc; this.cycles = cycles; this.halted = halted;
@@ -24,7 +24,7 @@ public final class Debugger {
     private final LinkedHashMap<String,Integer> vars = new LinkedHashMap<>();
     private final Map<String,Integer> prevVars = new LinkedHashMap<>();
 
-    private int pc = 0;         // 0-based
+    private int pc = 0;
     private int cycles = 0;
     private boolean halted = false;
     private final Map<String,Integer> labelToIndex = new HashMap<>();
@@ -37,7 +37,7 @@ public final class Debugger {
         if (inputs != null) {
             for (int i = 0; i < inputs.size(); i++) vars.put("x"+(i+1), Math.max(0, inputs.get(i)));
         }
-        // Build labels map
+
         for (int i=0;i<rendered.list.size();i++) {
             String lbl = rendered.list.get(i).label;
             if (lbl != null && !lbl.isBlank()) labelToIndex.put(lbl.toUpperCase(Locale.ROOT), i);
@@ -47,7 +47,7 @@ public final class Debugger {
     public Program.Rendered rendered() { return rendered; }
     public Snapshot snapshot() { return new Snapshot(pc, cycles, halted, copy(vars), Map.of()); }
 
-    /** Execute a single instruction; return post-step snapshot (with changed vars). */
+
     public Snapshot step() {
         if (halted || pc < 0 || pc >= rendered.list.size()) {
             halted = true;
@@ -58,13 +58,13 @@ public final class Debugger {
         Instruction inst = rendered.list.get(pc);
         String text = inst.text == null ? "" : inst.text.trim();
 
-        // cycles
+
         cycles += Math.max(0, inst.cycles());
 
         prevVars.clear();
         prevVars.putAll(vars);
 
-        // dispatch (generic identifiers + QUOTE + JEF)
+
         Matcher m;
 
         if ((m = RX_GOTO.matcher(text)).matches()) {
@@ -109,7 +109,7 @@ public final class Debugger {
             String dst = m.group(1); set(dst, 0); pc++; return snapshotChanged();
         }
 
-        // -------- QUOTE dst <- <expr> --------
+
         if ((m = RX_QUOTE.matcher(text)).matches()) {
             String dst = m.group(1);
             String expr = m.group(2);
@@ -119,7 +119,7 @@ public final class Debugger {
             return snapshotChanged();
         }
 
-        // -------- JUMP_EQUAL_FUNCTION v == <expr> GOTO Lx --------
+
         if ((m = RX_JEF.matcher(text)).matches()) {
             String v = m.group(1);
             String expr = m.group(2);
@@ -129,7 +129,7 @@ public final class Debugger {
             return snapshotChanged();
         }
 
-        // Unknown → just step to avoid lockup
+
         pc++;
         return snapshotChanged();
     }
@@ -160,9 +160,7 @@ public final class Debugger {
         return new LinkedHashMap<>(m);
     }
 
-    /* ===========================
-       Expr evaluator (call + tuple)
-       =========================== */
+
 
     private static final Pattern RX_CALL = Pattern.compile("^([A-Za-z][A-Za-z0-9_]*)\\((.*)\\)$");
 
@@ -171,7 +169,7 @@ public final class Debugger {
         String t = s.trim();
         if (t.isEmpty()) return 0;
 
-        // 1) Normal call: Name(arg,...)
+
         Matcher call = RX_CALL.matcher(t);
         if (call.matches()) {
             String fname = call.group(1);
@@ -182,7 +180,7 @@ public final class Debugger {
             return apply(fname, evals);
         }
 
-        // 2) Tuple form: (Name,arg,...)  ← used by your XMLs
+
         if (t.charAt(0) == '(' && t.charAt(t.length()-1) == ')') {
             String inner = t.substring(1, t.length()-1).trim();
             if (!inner.isEmpty()) {
@@ -197,12 +195,12 @@ public final class Debugger {
             return 0;
         }
 
-        // 3) Bare number
+
         if (t.chars().allMatch(Character::isDigit)) {
             try { return Integer.parseInt(t); } catch (Exception ignore) { return 0; }
         }
 
-        // 4) Bare identifier (variable)
+
         if (Character.isLetter(t.charAt(0))) {
             return get(t);
         }
@@ -210,7 +208,7 @@ public final class Debugger {
         return 0;
     }
 
-    /** Split by commas at top-level (balanced parentheses). */
+
     private static List<String> splitTopLevel(String s) {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
@@ -231,51 +229,51 @@ public final class Debugger {
         return out;
     }
 
-    /** Apply the course stdlib used in your XMLs. */
+
     private int apply(String name, List<Integer> a) {
         String n = name.trim();
 
-        // CONST0 (with or without parens/tuple)
+
         if (n.equalsIgnoreCase("CONST0")) return 0;
 
-        // Successor(x) := x + 1
+
         if (n.equalsIgnoreCase("Successor")) return Math.max(0, (a.size() >= 1 ? a.get(0) : 0) + 1);
 
-        // Minus(a,b) := max(0, a - b)
+
         if (n.equalsIgnoreCase("Minus")) return Math.max(0, (a.size() >= 1 ? a.get(0) : 0) - (a.size() >= 2 ? a.get(1) : 0));
 
-        // Smaller_Than(a,b) → 1 if a<b else 0
+
         if (n.equalsIgnoreCase("Smaller_Than")) return (a.size() >= 2 && a.get(0) < a.get(1)) ? 1 : 0;
 
-        // Bigger_Equal_Than(a,b) → 1 if a>=b else 0
+
         if (n.equalsIgnoreCase("Bigger_Equal_Than")) return (a.size() >= 2 && a.get(0) >= a.get(1)) ? 1 : 0;
 
-        // Smaller_Equal_Than(a,b) → 1 if a<=b else 0
+
         if (n.equalsIgnoreCase("Smaller_Equal_Than")) return (a.size() >= 2 && a.get(0) <= a.get(1)) ? 1 : 0;
 
-        // NOT(x) → 1 if x==0 else 0 (boolean 0/1)
+
         if (n.equalsIgnoreCase("NOT")) return (a.size() >= 1 && a.get(0) == 0) ? 1 : 0;
 
-        // EQUAL(a,b) → 1 if equal else 0
+
         if (n.equalsIgnoreCase("EQUAL")) return (a.size() >= 2 && Objects.equals(a.get(0), a.get(1))) ? 1 : 0;
 
-        // AND(a,b,...) → 1 if all non-zero else 0
+
         if (n.equalsIgnoreCase("AND")) {
             for (int v : a) if (v == 0) return 0;
             return 1;
         }
 
-        // OR(a,b,...) → 1 if any non-zero else 0
+
         if (n.equalsIgnoreCase("OR")) {
             for (int v : a) if (v != 0) return 1;
             return 0;
         }
 
-        // Unknown function → 0 (conservative)
+
         return 0;
     }
 
-    // -------- Patterns (generic identifiers) --------
+
     private static final String VAR = "([A-Za-z][A-Za-z0-9_]*)";
     private static final String LABEL = "(EXIT|L\\d+)";
 

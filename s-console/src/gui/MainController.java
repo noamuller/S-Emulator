@@ -17,31 +17,30 @@ import java.util.stream.Collectors;
 
 public class MainController {
 
-    // --- Top/toolbar
+    //toolbar
     @FXML private TextField loadedPathField;
     @FXML private ComboBox<String> functionCombo; // kept for UI continuity
     @FXML private TextField degreeField;
     @FXML private TextField maxDegreeField;
 
-    // --- Instructions table
+    //instructions
     @FXML private TableView<Object> instructionTable;
     @FXML private TableColumn<Object, String> colIndex, colType, colLabel, colInstruction, colCycles;
 
-    // --- Debugger
+    //debug
     @FXML private Label pcLabel, cyclesLabel, haltedLabel;
     @FXML private TextArea debugLogArea; // we’ll use top section of this to show live vars
 
-    // --- Run
+
     @FXML private TextField singleInputField;
     @FXML private TextArea inputsArea, resultsArea;
 
-    // --- History
+    //history
     @FXML private TableView<HistoryRow> historyTable;
     @FXML private TableColumn<HistoryRow, String> hColRun, hColDegree, hColInputs, hColY, hColCycles;
     private final ObservableList<HistoryRow> history = FXCollections.observableArrayList();
     private int runCounter = 0;
 
-    // --- State
     private final EngineAdapter engine = new EngineAdapter();
 
     private Stage stage() {
@@ -52,7 +51,7 @@ public class MainController {
 
     @FXML
     private void initialize() {
-        // History table
+        //history table
         hColRun.setCellValueFactory(c -> new SimpleStringProperty(String.valueOf(c.getValue().runNo())));
         hColDegree.setCellValueFactory(c -> new SimpleStringProperty(String.valueOf(c.getValue().degree())));
         hColInputs.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().inputs()));
@@ -66,11 +65,11 @@ public class MainController {
         functionCombo.getSelectionModel().selectFirst();
 
         installSmartCellValueFactories();
-        // --- lock row height so every row has the same height (clean grid lines)
+
         instructionTable.setFixedCellSize(22);
         instructionTable.setStyle("-fx-cell-size: 22px;");
 
-        // Make sure the instruction cells never wrap or add graphics (no height growth)
+
         colInstruction.setCellFactory(tc -> new TableCell<>() {
             @Override protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
@@ -82,11 +81,11 @@ public class MainController {
 
         enableAutoScalingTableHeaderFonts();
 
-        // Keep default selection visuals (smooth highlight)
+
         instructionTable.setRowFactory(tv -> new TableRow<>());
     }
 
-    /* ===================== Toolbar ===================== */
+
 
     @FXML
     private void onLoadXml() {
@@ -130,12 +129,12 @@ public class MainController {
             int maxDeg = engine.getMaxDegree();
             int cur = parseIntSafe(degreeField.getText(), 0);
 
-            // If user didn’t type anything useful, bump by 1
+
             int next = Math.min(maxDeg, Math.max(0, cur == 0 ? 1 : cur));
             degreeField.setText(String.valueOf(next));
 
             instructionTable.setItems(FXCollections.observableArrayList(engine.getExpandedRows(next)));
-            // keep current selection if we're in debug; otherwise no selection change
+
         } catch (Exception ex) {
             showError("Expand failed", ex);
         }
@@ -144,7 +143,7 @@ public class MainController {
     @FXML
     private void onCollapse() { onShowProgram(); }
 
-    /* ===================== Run ===================== */
+    /*Run*/
 
     @FXML
     private void onRunAddInput() {
@@ -170,7 +169,7 @@ public class MainController {
         resultsArea.clear();
     }
 
-    // ---------- CHANGED: Run uses the Debugger so collapsed/expanded match ----------
+
     @FXML
     private void onRunExecute() {
         try {
@@ -179,17 +178,17 @@ public class MainController {
             int deg = parseIntSafe(degreeField.getText(), 0);
             var inputs = parseInputs(inputsArea.getText());
 
-            // Start debugger for the requested degree & inputs
+
             engine.dbgStart(deg, inputs);
-            // show the correct row set (expanded view for the chosen degree)
+
             instructionTable.setItems(FXCollections.observableArrayList(engine.getDebuggerRows()));
             refreshDebugUi();
             highlightPc();
 
-            // Drive to completion (single source of truth with QUOTE/JEF semantics)
+
             while (!engine.isHalted()) {
                 engine.dbgStep();
-                // light UI refresh for smooth highlight & live vars
+
                 refreshDebugUi();
                 highlightPc();
             }
@@ -205,7 +204,7 @@ public class MainController {
             showError("Run failed", ex);
         }
     }
-    // ---------------------------------------------------------------------------------
+
 
     @FXML
     private void onHistoryRerunSelected() {
@@ -216,7 +215,7 @@ public class MainController {
         onRunExecute();
     }
 
-    /* ===================== Debugger ===================== */
+    /*debugger*/
 
     @FXML
     private void onDebugStart() {
@@ -229,7 +228,7 @@ public class MainController {
             instructionTable.setItems(FXCollections.observableArrayList(engine.getDebuggerRows()));
             refreshDebugUi();
             highlightPc();
-            maybeFinishIntoHistory(); // in case pc = -1 immediately
+            maybeFinishIntoHistory();
         } catch (Exception ex) {
             showError("Start Debug failed", ex);
         }
@@ -271,7 +270,7 @@ public class MainController {
         }
     }
 
-    /** If debugger halted, add an entry to History like a normal run. */
+
     private void maybeFinishIntoHistory() {
         if (!engine.isHalted()) return;
         int y = engine.getCurrentY();
@@ -282,13 +281,13 @@ public class MainController {
         history.add(new HistoryRow(runCounter, deg, inputs, y, cycles));
     }
 
-    /** Update labels + live variable panel + log. */
+
     private void refreshDebugUi() {
         pcLabel.setText(engine.getPcText());
         cyclesLabel.setText(String.valueOf(engine.getCycles()));
         haltedLabel.setText(String.valueOf(engine.isHalted()));
 
-        // Live vars (changed marked with '*')
+
         var vars = engine.getVars();
         var changed = engine.getChanged();
 
@@ -307,23 +306,23 @@ public class MainController {
         debugLogArea.setText(varsView.toString() + engine.getLog());
     }
 
-    /** Smoothly highlight current PC; no clearing = no flicker. */
+
     private void highlightPc() {
         int pc = engine.getPcIndex(); // 0-based; -1 when halted
         var items = instructionTable.getItems();
         if (pc < 0 || pc >= items.size()) {
-            // halted or out of range: just keep last selection (looks nicer than blinking)
+
             return;
         }
         var sel = instructionTable.getSelectionModel();
         if (sel.getSelectedIndex() != pc) {
-            sel.select(pc); // don't clearAndSelect → avoids brief “no selection” state
+            sel.select(pc);
         }
         instructionTable.getFocusModel().focus(pc);
         instructionTable.scrollTo(Math.max(0, pc - 3));
     }
 
-    /* ===================== Helpers ===================== */
+
 
     private void ensureLoaded() {
         if (!engine.isLoaded()) throw new IllegalStateException("Load an XML first.");
@@ -356,7 +355,7 @@ public class MainController {
         a.showAndWait();
     }
 
-    // ----- header auto-scaling (kept) -----
+
     private void enableAutoScalingTableHeaderFonts() {
         instructionTable.widthProperty().addListener((obs, o, n) -> Platform.runLater(this::rescaleHeaderFonts));
         instructionTable.sceneProperty().addListener((obs, o, n) -> { if (n != null) Platform.runLater(this::rescaleHeaderFonts); });
@@ -373,7 +372,7 @@ public class MainController {
         });
     }
 
-    // ----- table cell factories (use Row getters) -----
+
     private void installSmartCellValueFactories() {
         colIndex.setCellValueFactory(reflecting("getIndex"));
         colType.setCellValueFactory(reflecting("getType"));
@@ -396,6 +395,6 @@ public class MainController {
         };
     }
 
-    /* ===== History row ===== */
+
     public record HistoryRow(int runNo, int degree, String inputs, int y, int cycles) {}
 }

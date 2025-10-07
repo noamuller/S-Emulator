@@ -8,16 +8,10 @@ import java.io.File;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Hard-wired adapter to your engine.
- * - Loads Program via ProgramParser.parseFromXml(File)
- * - Expands rows via Program.expandToDegree(deg)
- * - Runs by driving Debugger until halt
- * - Live Debugger access: pc/cycles/halted/log/vars/changed + the exact rendered rows
- */
+
 public final class EngineAdapter {
 
-    /** Table row model */
+
     public static final class Row {
         private final int index;
         private final String type;
@@ -43,7 +37,7 @@ public final class EngineAdapter {
 
     private Program program;
 
-    // Debugger session state
+
     private Debugger dbg;
     private Debugger.Snapshot lastSnap;
     private final StringBuilder dbgLog = new StringBuilder();
@@ -51,7 +45,7 @@ public final class EngineAdapter {
     private List<Integer> dbgInputs = List.of();
     private List<Row> dbgRows = List.of();
 
-    /* ---------------- Load / Info ---------------- */
+
 
     public void load(File xml) {
         program = ProgramParser.parseFromXml(xml);
@@ -71,7 +65,7 @@ public final class EngineAdapter {
 
     public int getMaxDegree() { return program == null ? 1 : program.maxDegree(); }
 
-    /* ---------------- Rows ---------------- */
+
 
     public List<Row> getOriginalRows() { return toRows(0); }
 
@@ -119,7 +113,7 @@ public final class EngineAdapter {
         return 0;
     }
 
-    /* ---------------- Run (headless via Debugger) ---------------- */
+
 
     public RunResult run(int degree, List<Integer> inputs) {
         ensureProgram();
@@ -135,7 +129,7 @@ public final class EngineAdapter {
         return new RunResult(y, snap.cycles);
     }
 
-    /* ---------------- Live Debugger ---------------- */
+
 
     public void dbgStart(int degree, List<Integer> inputs) {
         ensureProgram();
@@ -163,7 +157,7 @@ public final class EngineAdapter {
         appendSnapToLog("step", lastSnap);
     }
 
-    /** Finish quickly (no explicit stop() in your Debugger). */
+
     public void dbgStop() {
         ensureDbg();
         int guard = 1_000_000;
@@ -179,20 +173,20 @@ public final class EngineAdapter {
     public int getCycles() { return lastSnap == null ? 0 : lastSnap.cycles; }
     public String getLog() { return dbgLog.toString(); }
 
-    /** Current y at last snapshot (0 if absent). */
+
     public int getCurrentY() {
         if (lastSnap == null || lastSnap.vars == null) return 0;
         return lastSnap.vars.getOrDefault("y", 0);
     }
 
-    /** Immutable copy of current variables (sorted by name). */
+
     public LinkedHashMap<String,Integer> getVars() {
         if (lastSnap == null || lastSnap.vars == null) return new LinkedHashMap<>();
         // keep insertion order of LinkedHashMap but sort for stable UI (x1,x2,...,y,z1,...)
         return sortVars(lastSnap.vars);
     }
 
-    /** Changed vars from the last step (name -> new value). */
+
     public Map<String,Integer> getChanged() {
         if (lastSnap == null || lastSnap.changed == null) return Map.of();
         return lastSnap.changed;
@@ -202,7 +196,7 @@ public final class EngineAdapter {
     public int getDebuggerDegree() { return dbgDegree; }
     public List<Integer> getDebuggerInputs() { return dbgInputs; }
 
-    /* ---------------- Helpers ---------------- */
+
 
     private void ensureProgram() {
         if (program == null) throw new IllegalStateException("Program is not loaded.");
@@ -222,7 +216,7 @@ public final class EngineAdapter {
     }
 
     private static LinkedHashMap<String,Integer> sortVars(LinkedHashMap<String,Integer> in) {
-        // Heuristic order: x*, y, z*
+
         Comparator<String> cmp = Comparator
                 .comparing((String s) -> !s.equals("y"))
                 .thenComparing((String s) -> !(s.startsWith("x") || s.startsWith("X")))

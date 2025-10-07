@@ -10,12 +10,11 @@ import java.net.URL;
 public class MainApp extends Application {
     @Override
     public void start(Stage stage) throws Exception {
-        // Load FXML
+
         FXMLLoader fxml = new FXMLLoader(getClass().getResource("main.fxml"));
         Scene scene = new Scene(fxml.load());
 
-        // Add CSS here (reliable)
-        // style.css is in the same package (gui). If you move it, update the path accordingly.
+
         URL css = getClass().getResource("style.css");
         if (css != null) {
             scene.getStylesheets().add(css.toExternalForm());

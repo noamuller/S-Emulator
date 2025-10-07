@@ -4,13 +4,7 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Program model + expansion engine (תרגיל 2).
- *
- * Degree:
- *  - 0: keep synthetics (QUOTE / JUMP_EQUAL_FUNCTION)
- *  - 1: inline synthetics into basic instructions
- */
+
 public final class Program {
 
     public static final class Rendered {
@@ -30,8 +24,8 @@ public final class Program {
     }
 
     public final String name;
-    public final List<Instruction> instructions;                 // degree-0 program body
-    public final Map<String, List<Instruction>> functions;       // name -> textual body
+    public final List<Instruction> instructions;
+    public final Map<String, List<Instruction>> functions;
 
     public Program(String name, List<Instruction> instructions) {
         this(name, instructions, new LinkedHashMap<>());
@@ -56,7 +50,7 @@ public final class Program {
         return 0;
     }
 
-    /** Expand to requested degree (clamped). */
+
     public Rendered expandToDegree(int degree) {
         int d = Math.max(0, Math.min(degree, maxDegree()));
 
@@ -68,28 +62,42 @@ public final class Program {
                     Collections.unmodifiableList(chains));
         }
 
-        // Degree 1: inline synthetics.
+
         List<Instruction> out = new ArrayList<>();
         List<List<String>> chains = new ArrayList<>();
 
-        // CHANGED: keep a single Scratch for the whole expansion run
+
         Scratch scratch = new Scratch();
 
         for (Instruction ins : instructions) {
-            List<Instruction> expanded = tryExpandKnownSynthetic(ins, scratch); // CHANGED
-            if (expanded != null) {
+            List<Instruction> expanded = tryExpandKnownSynthetic(ins, scratch);
+
+            if (expanded != null && !expanded.isEmpty()) {
                 String origin = renderOriginLine(ins);
                 List<String> chain = List.of(origin);
+
+
+                boolean first = true;
                 for (Instruction e : expanded) {
-                    out.add(e);
+                    Instruction toAdd = e;
+                    if (first && ins.label != null && !ins.label.isBlank()) {
+                        toAdd = withLabel(e, ins.label.trim());
+                    }
+                    out.add(toAdd);
                     chains.add(chain);
+                    first = false;
                 }
+            } else if (expanded != null) {
+
+                chains.add(List.of(renderOriginLine(ins)));
             } else {
+
                 Instruction b = asBasic(ins);
                 out.add(b);
                 chains.add(List.of(renderOriginLine(ins)));
             }
         }
+
         return new Rendered(name,
                 Collections.unmodifiableList(out),
                 Collections.unmodifiableList(chains));
@@ -113,6 +121,14 @@ public final class Program {
         return (lbl + txt).trim();
     }
 
+
+    private static Instruction withLabel(Instruction src, String newLabel) {
+        String txt = (src == null) ? "" : src.text;
+
+        return Instruction.parseFromText(newLabel, txt, "B", cyclesFor(txt));
+    }
+
+
     private static final Pattern RX_QUOTE =
             Pattern.compile("^\\s*QUOTE\\s+([A-Za-z]\\d*|y)\\s*<-\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)\\s*$");
     private static final Pattern RX_JEF =
@@ -123,7 +139,7 @@ public final class Program {
         return t.startsWith("QUOTE ") || t.startsWith("JUMP_EQUAL_FUNCTION ");
     }
 
-    // CHANGED: accept shared Scratch
+
     private List<Instruction> tryExpandKnownSynthetic(Instruction ins, Scratch scratch) {
         String text = (ins.text == null) ? "" : ins.text;
 
@@ -132,7 +148,7 @@ public final class Program {
             String dst  = m.group(1);
             String name = m.group(2);
             String args = m.group(3);
-            return expandQuote(dst, name, args, scratch); // CHANGED
+            return expandQuote(dst, name, args, scratch);
         }
 
         Matcher j = RX_JEF.matcher(text);
@@ -141,21 +157,21 @@ public final class Program {
             String func  = j.group(2);
             String args  = j.group(3);
             String label = j.group(4);
-            return expandJumpEqualFunction(var, func, args, label, scratch); // CHANGED
+            return expandJumpEqualFunction(var, func, args, label, scratch);
         }
 
         return null;
     }
 
-    /** Expand a QUOTE dst <- Func(args) into basic instructions. */
-    private List<Instruction> expandQuote(String dst, String name, String argsStr, Scratch scratch) { // CHANGED
+
+    private List<Instruction> expandQuote(String dst, String name, String argsStr, Scratch scratch) {
         List<Instruction> out = new ArrayList<>();
         evalFuncInto(VariableRef.parse(dst), name, parseArgs(argsStr), out, scratch);
         return out;
     }
 
-    /** Expand JUMP_EQUAL_FUNCTION using shared Scratch (unique labels across program). */
-    private List<Instruction> expandJumpEqualFunction(String var, String func, String argsStr, String label, Scratch scratch) { // CHANGED
+
+    private List<Instruction> expandJumpEqualFunction(String var, String func, String argsStr, String label, Scratch scratch) {
         List<Instruction> out = new ArrayList<>();
 
         VariableRef tmp = VariableRef.parse("z" + scratch.nextZ());
@@ -219,7 +235,7 @@ public final class Program {
                 String innerFn = mj.group(2);
                 String inner   = mj.group(3);
                 String tgt     = mj.group(4);
-                List<Instruction> blk = expandJumpEqualFunction(v, innerFn, inner, tgt, scratch); // CHANGED
+                List<Instruction> blk = expandJumpEqualFunction(v, innerFn, inner, tgt, scratch);
                 if (!blk.isEmpty()) {
                     Instruction tail = blk.get(blk.size() - 1);
                     String remapped = substituteLabelsInText(tail.text, labelBase, labelMap);
@@ -242,8 +258,21 @@ public final class Program {
                                               Scratch scratch) {
         if (text == null || text.isBlank()) return text;
 
+
+        Pattern pZ = Pattern.compile("\\bz(\\d+)\\b");
+        Matcher mZ = pZ.matcher(text);
+        StringBuffer sbZ = new StringBuffer();
+        while (mZ.find()) {
+            String old = "z" + mZ.group(1);
+            String rep = zMap.computeIfAbsent(old, k -> "z" + scratch.nextZ());
+            mZ.appendReplacement(sbZ, Matcher.quoteReplacement(rep));
+        }
+        mZ.appendTail(sbZ);
+        String afterZ = sbZ.toString();
+
+
         Pattern pXY = Pattern.compile("\\b(y|x\\d+)\\b");
-        Matcher mXY = pXY.matcher(text);
+        Matcher mXY = pXY.matcher(afterZ);
         StringBuffer sb = new StringBuffer();
         while (mXY.find()) {
             String tok = mXY.group(1);
@@ -252,20 +281,10 @@ public final class Program {
             mXY.appendReplacement(sb, Matcher.quoteReplacement(rep));
         }
         mXY.appendTail(sb);
-        String afterXY = sb.toString();
 
-        Pattern pZ = Pattern.compile("\\bz(\\d+)\\b");
-        Matcher mZ = pZ.matcher(afterXY);
-        StringBuffer sb2 = new StringBuffer();
-        while (mZ.find()) {
-            String old = "z" + mZ.group(1);
-            String rep = zMap.computeIfAbsent(old, k -> "z" + scratch.nextZ());
-            mZ.appendReplacement(sb2, Matcher.quoteReplacement(rep));
-        }
-        mZ.appendTail(sb2);
-
-        return sb2.toString();
+        return sb.toString();
     }
+
 
     private static String substituteLabelsInText(String text, int labelBase, Map<String,String> labelMap) {
         if (text == null || text.isBlank()) return text;
@@ -396,7 +415,7 @@ public final class Program {
         return -1;
     }
 
-    /** Per-expansion scratch counters to avoid collisions. */
+
     private static final class Scratch {
         private int zCounter = 1;
         private int nextLabelBase = 1000; // grows by 1000 each call frame
