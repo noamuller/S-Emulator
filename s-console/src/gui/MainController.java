@@ -19,7 +19,7 @@ public class MainController {
 
     //toolbar
     @FXML private TextField loadedPathField;
-    @FXML private ComboBox<String> functionCombo; // kept for UI continuity
+    @FXML private ComboBox<String> functionCombo;
     @FXML private TextField degreeField;
     @FXML private TextField maxDegreeField;
 
