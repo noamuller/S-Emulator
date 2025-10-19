@@ -2,25 +2,37 @@ package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.*;
-import java.io.IOException;
-import server.core.*;
+import jakarta.servlet.ServletException;
 
-@WebServlet("/api/login")
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+import server.core.UserStore;
+
+@WebServlet(name = "LoginServlet", urlPatterns = {"/api/login"})
 public class LoginServlet extends HttpServlet {
-    @Override protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
-        String username = req.getParameter("username"); // POST form or query string
-        try {
-            User u = UserStore.get().loginOrCreate(username);
-            String json = "{"
-                    + SimpleJson.kv("userId", u.getId()) + ","
-                    + SimpleJson.kv("username", u.getUsername()) + ","
-                    + SimpleJson.kv("credits", u.getCredits())
-                    + "}";
-            resp.getWriter().println(json);
-        } catch (Exception ex) {
-            resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-            resp.getWriter().println("{\"error\":"+ SimpleJson.str(ex.getMessage()) +"}");
+
+    private final UserStore users = UserStore.get();
+
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
+        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        resp.setContentType("application/json");
+
+        String username = req.getParameter("username");
+        if (username == null || username.isBlank()) {
+            resp.setStatus(400);
+            resp.getWriter().write("{\"error\":\"username is required\"}");
+            return;
         }
+        var u = users.loginOrCreate(username.trim());
+
+        Map<String,Object> out = new LinkedHashMap<>();
+        out.put("userId", u.getId());
+        out.put("username", u.getUsername());
+        out.put("credits", u.getCredits());
+        resp.getWriter().write(StartRunServlet.Mini.stringify(out));
     }
 }

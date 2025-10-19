@@ -1,234 +1,199 @@
 package gui;
 
-import sengine.Debugger;
-import sengine.Program;
-import sengine.ProgramParser;
-
-import java.io.File;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
+import javax.net.ssl.HttpsURLConnection;
 
+public class EngineAdapter {
 
-public final class EngineAdapter {
+    private final String base; // e.g. http://localhost:8080/s-server/api
 
+    public EngineAdapter(String baseUrl) {
+        this.base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length()-1) : baseUrl;
+    }
 
-    public static final class Row {
-        private final int index;
-        private final String type;
-        private final String label;
-        private final String instructionText;
-        private final int cycles;
+    // ---------- Users ----------
+    public Map<String,Object> login(String name) throws IOException {
+        return postForm("/login", Map.of("username", name));
+    }
+    public Map<String,Object> me(String userId) throws IOException {
+        return getObject("/me?userId=" + URLEncoder.encode(userId, StandardCharsets.UTF_8));
+    }
+    public Map<String,Object> charge(String userId, int amount) throws IOException {
+        return postForm("/charge", Map.of("userId", userId, "amount", String.valueOf(amount)));
+    }
 
-        public Row(int index, String type, String label, String instructionText, int cycles) {
-            this.index = index;
-            this.type = type;
-            this.label = label;
-            this.instructionText = instructionText;
-            this.cycles = cycles;
+    // ---------- Programs ----------
+    public Map<String,Object> uploadProgram(File xml, String userId) throws IOException {
+        String boundary = "----SBoundary" + System.currentTimeMillis();
+        URL url = new URL(base + "/programs:upload");
+        HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        c.setDoOutput(true);
+        c.setRequestMethod("POST");
+        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+
+        try (OutputStream os = c.getOutputStream();
+             PrintWriter w = new PrintWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8), true)) {
+
+            // userId part
+            w.append("--").append(boundary).append("\r\n");
+            w.append("Content-Disposition: form-data; name=\"userId\"\r\n\r\n");
+            w.append(userId).append("\r\n");
+
+            // file part
+            w.append("--").append(boundary).append("\r\n");
+            w.append("Content-Disposition: form-data; name=\"file\"; filename=\"program.xml\"\r\n");
+            w.append("Content-Type: application/xml\r\n\r\n").flush();
+
+            try (InputStream is = new FileInputStream(xml)) {
+                is.transferTo(os);
+            }
+            os.flush();
+            w.append("\r\n--").append(boundary).append("--\r\n").flush();
         }
-        public int getIndex() { return index; }
-        public String getType() { return type; }
-        public String getLabel() { return label; }
-        public String getInstructionText() { return instructionText; }
-        public int getCycles() { return cycles; }
+        return readJsonObject(c);
     }
 
-    public record RunResult(int y, int cycles) {}
-
-    private Program program;
-
-
-    private Debugger dbg;
-    private Debugger.Snapshot lastSnap;
-    private final StringBuilder dbgLog = new StringBuilder();
-    private int dbgDegree = 0;
-    private List<Integer> dbgInputs = List.of();
-    private List<Row> dbgRows = List.of();
-
-
-
-    public void load(File xml) {
-        program = ProgramParser.parseFromXml(xml);
-        clearDebugger();
+    public List<Map<String,Object>> listPrograms(String userId) throws IOException {
+        return getArray("/programs?userId=" + URLEncoder.encode(userId, StandardCharsets.UTF_8));
     }
 
-    private void clearDebugger() {
-        dbg = null;
-        lastSnap = null;
-        dbgLog.setLength(0);
-        dbgDegree = 0;
-        dbgInputs = List.of();
-        dbgRows = List.of();
+    // ---------- Runs ----------
+    public Map<String,Object> startRun(String userId, String programId, int degree, List<Integer> inputs, boolean debug) throws IOException {
+        Map<String,Object> body = new LinkedHashMap<>();
+        body.put("userId", userId);
+        body.put("programId", programId);
+        body.put("degree", degree);
+        body.put("inputs", inputs);
+        body.put("mode", debug ? "debug" : "regular");
+        return postJson("/runs", body);
+    }
+    public Map<String,Object> getRunStatus(long runId) throws IOException {
+        return getObject("/runs/status?id=" + runId);
+    }
+    public Map<String,Object> step(long runId) throws IOException {
+        return postJson("/runs/step", Map.of("runId", runId));
+    }
+    public Map<String,Object> resume(long runId) throws IOException {
+        return postJson("/runs/resume", Map.of("runId", runId));
+    }
+    public Map<String,Object> stop(long runId) throws IOException {
+        return postJson("/runs/stop", Map.of("runId", runId));
     }
 
-    public boolean isLoaded() { return program != null; }
-
-    public int getMaxDegree() { return program == null ? 1 : program.maxDegree(); }
-
-
-
-    public List<Row> getOriginalRows() { return toRows(0); }
-
-    public List<Row> getExpandedRows(int degree) { return toRows(Math.max(0, degree)); }
-
-    private List<Row> toRows(int degree) {
-        if (program == null) return List.of();
-        Program.Rendered r = program.expandToDegree(degree);
-        List<Row> out = new ArrayList<>(r.list.size());
-        int i = 1;
-        for (var ins : r.list) {
-            String type = safeGetType(ins);
-            String label = safeGetLabel(ins);
-            String text  = safeGetText(ins);
-            int cycles   = safeGetCycles(ins);
-            out.add(new Row(i++, type, label, text, cycles));
+    // ---------- HTTP helpers ----------
+    private Map<String,Object> postForm(String path, Map<String,String> form) throws IOException {
+        HttpURLConnection c = open("POST", path);
+        c.setDoOutput(true);
+        c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8");
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+        for (var e : form.entrySet()) {
+            if (!first) sb.append('&');
+            first = false;
+            sb.append(URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)).append('=')
+                    .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
         }
-        return out;
-    }
-
-    private static String safeGetType(Object ins) {
-        try { return String.valueOf(ins.getClass().getMethod("type").invoke(ins)); } catch (Exception ignored) {}
-        try { return String.valueOf(ins.getClass().getMethod("getType").invoke(ins)); } catch (Exception ignored) {}
-        return "";
-    }
-    private static String safeGetLabel(Object ins) {
-        try { Object v = ins.getClass().getField("label").get(ins); return v == null ? "" : String.valueOf(v); }
-        catch (Exception ignored) {}
-        try { return String.valueOf(ins.getClass().getMethod("label").invoke(ins)); } catch (Exception ignored) {}
-        try { return String.valueOf(ins.getClass().getMethod("getLabel").invoke(ins)); } catch (Exception ignored) {}
-        return "";
-    }
-    private static String safeGetText(Object ins) {
-        try { Object v = ins.getClass().getField("text").get(ins); return v == null ? "" : String.valueOf(v); }
-        catch (Exception ignored) {}
-        try { return String.valueOf(ins.getClass().getMethod("text").invoke(ins)); } catch (Exception ignored) {}
-        try { return String.valueOf(ins.getClass().getMethod("getText").invoke(ins)); } catch (Exception ignored) {}
-        return "";
-    }
-    private static int safeGetCycles(Object ins) {
-        try { Object v = ins.getClass().getMethod("cycles").invoke(ins); return v == null ? 0 : ((Number)v).intValue(); }
-        catch (Exception ignored) {}
-        try { Object v = ins.getClass().getMethod("getCycles").invoke(ins); return v == null ? 0 : ((Number)v).intValue(); }
-        catch (Exception ignored) {}
-        return 0;
-    }
-
-
-
-    public RunResult run(int degree, List<Integer> inputs) {
-        ensureProgram();
-        Debugger d = new Debugger(program, Math.max(0, degree), inputs == null ? List.of() : inputs);
-        Debugger.Snapshot snap = d.snapshot();
-        int guard = 1_000_000;
-        while (!snap.halted && guard-- > 0) snap = d.step();
-        int y = 0;
-        if (snap.vars != null) {
-            Integer v = snap.vars.get("y");
-            if (v != null) y = v;
+        try (OutputStream os = c.getOutputStream()) {
+            os.write(sb.toString().getBytes(StandardCharsets.UTF_8));
         }
-        return new RunResult(y, snap.cycles);
+        return readJsonObject(c);
     }
 
-
-
-    public void dbgStart(int degree, List<Integer> inputs) {
-        ensureProgram();
-        dbgDegree = Math.max(0, degree);
-        dbgInputs = inputs == null ? List.of() : List.copyOf(inputs);
-        dbgRows = toRows(dbgDegree); // exact rows used by the debugger
-        dbg = new Debugger(program, dbgDegree, dbgInputs);
-        lastSnap = dbg.snapshot();
-        dbgLog.setLength(0);
-        appendSnapToLog("(init)", lastSnap);
+    private Map<String,Object> getObject(String path) throws IOException {
+        HttpURLConnection c = open("GET", path);
+        return readJsonObject(c);
+    }
+    private List<Map<String,Object>> getArray(String path) throws IOException {
+        HttpURLConnection c = open("GET", path);
+        return readJsonArray(c);
+    }
+    private Map<String,Object> postJson(String path, Map<String,Object> body) throws IOException {
+        HttpURLConnection c = open("POST", path);
+        c.setDoOutput(true);
+        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        try (OutputStream os = c.getOutputStream()) {
+            os.write(MiniJson.stringify(body).getBytes(StandardCharsets.UTF_8));
+        }
+        return readJsonObject(c);
+    }
+    private HttpURLConnection open(String method, String path) throws IOException {
+        URL url = new URL(base + (path.startsWith("/") ? path : "/" + path));
+        HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        c.setRequestMethod(method);
+        c.setRequestProperty("Accept", "application/json");
+        return c;
     }
 
-    public void dbgResume() {
-        ensureDbg();
-        int guard = 10_000; // reasonable cap for resume
-        while (!lastSnap.halted && guard-- > 0) {
-            lastSnap = dbg.step();
-            appendSnapToLog("step", lastSnap);
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> readJsonObject(HttpURLConnection c) throws IOException {
+        int code = c.getResponseCode();
+        try (InputStream is = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream()) {
+            String s = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            return (Map<String, Object>) MiniJson.parse(s);
+        }
+    }
+    @SuppressWarnings("unchecked")
+    private List<Map<String,Object>> readJsonArray(HttpURLConnection c) throws IOException {
+        int code = c.getResponseCode();
+        try (InputStream is = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream()) {
+            String s = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            return (List<Map<String, Object>>) MiniJson.parse(s);
         }
     }
 
-    public void dbgStep() {
-        ensureDbg();
-        lastSnap = dbg.step();
-        appendSnapToLog("step", lastSnap);
-    }
-
-
-    public void dbgStop() {
-        ensureDbg();
-        int guard = 1_000_000;
-        while (!lastSnap.halted && guard-- > 0) {
-            lastSnap = dbg.step();
+    // ---- Minimal JSON (same as before) ----
+    static final class MiniJson {
+        static Object parse(String s) { return new Parser(s).parseValue(); }
+        static String stringify(Object o) {
+            StringBuilder sb = new StringBuilder(); write(o, sb); return sb.toString();
         }
-        appendSnapToLog("stop", lastSnap);
-    }
-
-    public boolean isHalted() { return lastSnap != null && lastSnap.halted; }
-    public int getPcIndex() { return lastSnap == null ? -1 : lastSnap.pc; } // 0-based
-    public String getPcText() { return lastSnap == null ? "*" : String.valueOf(lastSnap.pc); }
-    public int getCycles() { return lastSnap == null ? 0 : lastSnap.cycles; }
-    public String getLog() { return dbgLog.toString(); }
-
-
-    public int getCurrentY() {
-        if (lastSnap == null || lastSnap.vars == null) return 0;
-        return lastSnap.vars.getOrDefault("y", 0);
-    }
-
-
-    public LinkedHashMap<String,Integer> getVars() {
-        if (lastSnap == null || lastSnap.vars == null) return new LinkedHashMap<>();
-        // keep insertion order of LinkedHashMap but sort for stable UI (x1,x2,...,y,z1,...)
-        return sortVars(lastSnap.vars);
-    }
-
-
-    public Map<String,Integer> getChanged() {
-        if (lastSnap == null || lastSnap.changed == null) return Map.of();
-        return lastSnap.changed;
-    }
-
-    public List<Row> getDebuggerRows() { return dbgRows; }
-    public int getDebuggerDegree() { return dbgDegree; }
-    public List<Integer> getDebuggerInputs() { return dbgInputs; }
-
-
-
-    private void ensureProgram() {
-        if (program == null) throw new IllegalStateException("Program is not loaded.");
-    }
-    private void ensureDbg() {
-        if (dbg == null) throw new IllegalStateException("Debugger is not started.");
-    }
-    private void appendSnapToLog(String prefix, Debugger.Snapshot s) {
-        if (s == null) return;
-        if (s.changed != null && !s.changed.isEmpty()) {
-            dbgLog.append(prefix).append(" | pc=").append(s.pc).append(" cyc=").append(s.cycles).append(" changed=");
-            dbgLog.append(new LinkedHashMap<>(s.changed));
-        } else {
-            dbgLog.append(prefix).append(" | pc=").append(s.pc).append(" cyc=").append(s.cycles);
+        @SuppressWarnings("unchecked")
+        private static void write(Object o, StringBuilder sb) {
+            if (o == null) { sb.append("null"); return; }
+            if (o instanceof String) { sb.append('"').append(((String)o).replace("\\","\\\\").replace("\"","\\\"")).append('"'); return; }
+            if (o instanceof Number || o instanceof Boolean) { sb.append(o.toString()); return; }
+            if (o instanceof Map) {
+                sb.append('{'); boolean first = true;
+                for (Map.Entry<String,Object> e : ((Map<String,Object>)o).entrySet()) {
+                    if (!first) sb.append(','); first = false;
+                    sb.append('"').append(e.getKey().replace("\\","\\\\").replace("\"","\\\"")).append("\":");
+                    write(e.getValue(), sb);
+                } sb.append('}'); return;
+            }
+            if (o instanceof List) {
+                sb.append('['); boolean first = true;
+                for (Object x : (List<?>)o) { if (!first) sb.append(','); first=false; write(x, sb); }
+                sb.append(']'); return;
+            }
+            sb.append('"').append(String.valueOf(o)).append('"');
         }
-        dbgLog.append('\n');
-    }
-
-    private static LinkedHashMap<String,Integer> sortVars(LinkedHashMap<String,Integer> in) {
-
-        Comparator<String> cmp = Comparator
-                .comparing((String s) -> !s.equals("y"))
-                .thenComparing((String s) -> !(s.startsWith("x") || s.startsWith("X")))
-                .thenComparing((String s) -> !(s.startsWith("z") || s.startsWith("Z")))
-                .thenComparing(s -> s, String.CASE_INSENSITIVE_ORDER);
-        return in.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey(cmp))
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (a,b)->a,
-                        LinkedHashMap::new
-                ));
+        private static final class Parser {
+            private final String s; private int i=0; Parser(String s){this.s=s;}
+            Object parseValue(){ skip(); if(i>=s.length()) return null; char c=s.charAt(i);
+                if(c=='{') return parseObj(); if(c=='[') return parseArr(); if(c=='"') return parseStr();
+                if(c=='t'||c=='f') return parseBool(); if(c=='n'){i+=4;return null;} return parseNum();}
+            Map<String,Object> parseObj(){ Map<String,Object> m=new LinkedHashMap<>(); i++; skip();
+                if(s.charAt(i)=='}'){i++; return m;} while(true){ String k=parseStr(); skip(); i++; // :
+                    Object v=parseValue(); m.put(k,v); skip(); char c=s.charAt(i++); if(c=='}') break; } return m; }
+            List<Object> parseArr(){ List<Object>a=new ArrayList<>(); i++; skip();
+                if(s.charAt(i)==']'){i++; return a;} while(true){ Object v=parseValue(); a.add(v); skip();
+                    char c=s.charAt(i++); if(c==']') break; } return a; }
+            String parseStr(){ StringBuilder sb=new StringBuilder(); i++;
+                while(true){ char c=s.charAt(i++); if(c=='"') break;
+                    if(c=='\\'){ char n=s.charAt(i++); if(n=='"'||n=='\\') sb.append(n); else if(n=='n') sb.append('\n'); else if(n=='t') sb.append('\t'); else sb.append(n); }
+                    else sb.append(c); } return sb.toString(); }
+            Boolean parseBool(){ if(s.startsWith("true",i)){i+=4; return true;} i+=5; return false; }
+            Number parseNum(){ int j=i; while(i<s.length()){ char c=s.charAt(i);
+                if((c>='0'&&c<='9')||c=='-'||c=='+') i++; else break; }
+                String t=s.substring(j,i);
+                try { return Integer.parseInt(t); } catch(Exception ignore) {}
+                try { return Long.parseLong(t); } catch(Exception ignore) {}
+                return Double.parseDouble(t); }
+            void skip(){ while(i<s.length()){ char c=s.charAt(i);
+                if(c==' '||c=='\n'||c=='\r'||c=='\t') i++; else break; } }
+        }
     }
 }

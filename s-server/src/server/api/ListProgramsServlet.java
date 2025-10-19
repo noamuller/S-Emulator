@@ -2,29 +2,41 @@ package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.*;
+import jakarta.servlet.ServletException;
 import java.io.IOException;
-import java.util.List;
-import server.core.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
-@WebServlet("/api/programs")
+import server.core.ProgramStore;
+
+@WebServlet(name = "ListProgramsServlet", urlPatterns = {"/api/programs"})
 public class ListProgramsServlet extends HttpServlet {
-    @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
-        String userId = req.getParameter("userId");
-        List<ProgramStore.ProgramEntry> list = ProgramStore.get().list(userId);
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("[");
-        for (int i = 0; i < list.size(); i++) {
-            var e = list.get(i);
-            if (i > 0) sb.append(",");
-            sb.append("{")
-                    .append(SimpleJson.kv("programId", e.getId())).append(",")
-                    .append(SimpleJson.kv("name", e.getName()))
-                    .append("}");
+    private final ProgramStore programs = ProgramStore.get();
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
+        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        resp.setContentType("application/json");
+
+        String userId = req.getParameter("userId");
+        if (userId == null || userId.isBlank()) {
+            resp.setStatus(400);
+            resp.getWriter().write("{\"error\":\"userId is required\"}");
+            return;
         }
-        sb.append("]");
-        resp.getWriter().println(sb.toString());
+
+        List<Map<String,Object>> arr = new ArrayList<>();
+        for (var e : programs.list(userId)) {
+            Map<String,Object> o = new LinkedHashMap<>();
+            o.put("id", e.getId());
+            o.put("name", e.getName());
+            o.put("uploadedAt", String.valueOf(e.getUploadedAt()));
+            arr.add(o);
+        }
+        resp.getWriter().write(json(arr));
     }
+
+    private static String json(Object o){ return StartRunServlet.Mini.stringify(o); }
 }

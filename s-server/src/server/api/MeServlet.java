@@ -2,24 +2,35 @@ package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.*;
+import jakarta.servlet.ServletException;
 import java.io.IOException;
-import server.core.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
-@WebServlet("/api/me")
+import server.core.UserStore;
+
+@WebServlet(name = "MeServlet", urlPatterns = {"/api/me"})
 public class MeServlet extends HttpServlet {
-    @Override protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
+
+    private final UserStore users = UserStore.get();
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
+        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        resp.setContentType("application/json");
+
         String userId = req.getParameter("userId");
-        User u = UserStore.get().getById(userId);
+        var u = users.getById(userId);
         if (u == null) {
-            resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
-            resp.getWriter().println("{\"error\":\"user not found\"}");
+            resp.setStatus(404);
+            resp.getWriter().write("{\"error\":\"user not found\"}");
             return;
         }
-        String json = "{"
-                + SimpleJson.kv("userId", u.getId()) + ","
-                + SimpleJson.kv("credits", u.getCredits())
-                + "}";
-        resp.getWriter().println(json);
+        Map<String,Object> out = new LinkedHashMap<>();
+        out.put("userId", u.getId());
+        out.put("username", u.getUsername());
+        out.put("credits", u.getCredits());
+        resp.getWriter().write(StartRunServlet.Mini.stringify(out));
     }
 }

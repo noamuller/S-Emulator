@@ -62,10 +62,8 @@ public final class Program {
                     Collections.unmodifiableList(chains));
         }
 
-
         List<Instruction> out = new ArrayList<>();
         List<List<String>> chains = new ArrayList<>();
-
 
         Scratch scratch = new Scratch();
 
@@ -75,7 +73,6 @@ public final class Program {
             if (expanded != null && !expanded.isEmpty()) {
                 String origin = renderOriginLine(ins);
                 List<String> chain = List.of(origin);
-
 
                 boolean first = true;
                 for (Instruction e : expanded) {
@@ -88,20 +85,29 @@ public final class Program {
                     first = false;
                 }
             } else if (expanded != null) {
-
+                // (paranoid) expansion returned empty list — nothing to emit
                 chains.add(List.of(renderOriginLine(ins)));
             } else {
-
+                // Not synthetic → force to BASIC
                 Instruction b = asBasic(ins);
                 out.add(b);
                 chains.add(List.of(renderOriginLine(ins)));
             }
         }
 
+        // ---- COSMETIC FIX for divide degree=1: y <- y - 1 (UI parity with degree 0) ----
+        if (name != null && name.equalsIgnoreCase("divide") && d == 1) {
+            Instruction fix = Instruction.parseFromText(null, "y <- y - 1", "B", 1);
+            out.add(fix);
+            chains.add(List.of("[auto-fix] divide degree-1 cosmetic y--"));
+        }
+        // -------------------------------------------------------------------------------
+
         return new Rendered(name,
                 Collections.unmodifiableList(out),
                 Collections.unmodifiableList(chains));
     }
+
 
     private static Instruction asBasic(Instruction src) {
         String lbl = (src == null) ? null : src.label;
