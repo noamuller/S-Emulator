@@ -1,199 +1,301 @@
 package gui;
 
-import java.io.*;
-import java.net.*;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
-import javax.net.ssl.HttpsURLConnection;
+import javafx.util.Pair;
 
+import java.io.*;
+import java.net.URI;
+import java.net.http.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@SuppressWarnings("unchecked")
 public class EngineAdapter {
 
-    private final String base; // e.g. http://localhost:8080/s-server/api
+    // Base URL of your Tomcat webapp:
+    private static final String BASE = "http://localhost:8080/s-server";
 
-    public EngineAdapter(String baseUrl) {
-        this.base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length()-1) : baseUrl;
+    private final HttpClient http = HttpClient.newHttpClient();
+
+    private String userId;       // current user
+    private String programId;    // last uploaded / selected program
+    private int maxDegree = 0;
+
+    // Debug/run session
+    private Long runId = null;
+    private boolean halted = true;
+    private int cycles = 0;
+    private int pc = -1;
+    private String currentInstruction = null;
+    private LinkedHashMap<String,Integer> vars = new LinkedHashMap<>();
+    private Map<String,Integer> changed = new LinkedHashMap<>();
+    private final StringBuilder log = new StringBuilder();
+
+    /* ===== Public API used by MainController ===== */
+
+    public boolean isLoaded() { return programId != null; }
+
+    public void load(File xml) throws Exception {
+        ensureUser();
+        // 1) upload
+        var mp = multipartUpload(xml, Map.of("userId", userId));
+        var resp = postRaw("/api/programs:upload", mp.contentType(), mp.bytes());
+        Map<String,Object> up = (Map<String,Object>) json(resp);
+        programId = String.valueOf(up.get("id"));
+
+        // 2) fetch meta (original rows + maxDegree)
+        Map<String,Object> meta = (Map<String,Object>) json(get("/api/programs/meta?userId="+enc(userId)+"&programId="+enc(programId)));
+        maxDegree = ((Number) meta.getOrDefault("maxDegree", 0)).intValue();
+
+        // cache original rows
+        this.originalRows = (List<Object>) meta.getOrDefault("rows", List.of());
+        this.expandedCache.clear();
     }
 
-    // ---------- Users ----------
-    public Map<String,Object> login(String name) throws IOException {
-        return postForm("/login", Map.of("username", name));
-    }
-    public Map<String,Object> me(String userId) throws IOException {
-        return getObject("/me?userId=" + URLEncoder.encode(userId, StandardCharsets.UTF_8));
-    }
-    public Map<String,Object> charge(String userId, int amount) throws IOException {
-        return postForm("/charge", Map.of("userId", userId, "amount", String.valueOf(amount)));
+    public int getMaxDegree() { return maxDegree; }
+
+    public List<Object> getOriginalRows() {
+        return originalRows == null ? List.of() : originalRows;
     }
 
-    // ---------- Programs ----------
-    public Map<String,Object> uploadProgram(File xml, String userId) throws IOException {
-        String boundary = "----SBoundary" + System.currentTimeMillis();
-        URL url = new URL(base + "/programs:upload");
-        HttpURLConnection c = (HttpURLConnection) url.openConnection();
-        c.setDoOutput(true);
-        c.setRequestMethod("POST");
-        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-
-        try (OutputStream os = c.getOutputStream();
-             PrintWriter w = new PrintWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8), true)) {
-
-            // userId part
-            w.append("--").append(boundary).append("\r\n");
-            w.append("Content-Disposition: form-data; name=\"userId\"\r\n\r\n");
-            w.append(userId).append("\r\n");
-
-            // file part
-            w.append("--").append(boundary).append("\r\n");
-            w.append("Content-Disposition: form-data; name=\"file\"; filename=\"program.xml\"\r\n");
-            w.append("Content-Type: application/xml\r\n\r\n").flush();
-
-            try (InputStream is = new FileInputStream(xml)) {
-                is.transferTo(os);
-            }
-            os.flush();
-            w.append("\r\n--").append(boundary).append("--\r\n").flush();
-        }
-        return readJsonObject(c);
+    public List<Object> getExpandedRows(int degree) throws Exception {
+        degree = Math.max(0, Math.min(degree, maxDegree));
+        if (degree == 0) return getOriginalRows();
+        if (expandedCache.containsKey(degree)) return expandedCache.get(degree);
+        String url = "/api/programs/expand?userId="+enc(userId)+"&programId="+enc(programId)+"&degree="+degree;
+        List<Object> rows = (List<Object>) json(get(url));
+        expandedCache.put(degree, rows);
+        return rows;
     }
 
-    public List<Map<String,Object>> listPrograms(String userId) throws IOException {
-        return getArray("/programs?userId=" + URLEncoder.encode(userId, StandardCharsets.UTF_8));
-    }
-
-    // ---------- Runs ----------
-    public Map<String,Object> startRun(String userId, String programId, int degree, List<Integer> inputs, boolean debug) throws IOException {
+    public void dbgStart(int degree, List<Integer> inputs) throws Exception {
         Map<String,Object> body = new LinkedHashMap<>();
         body.put("userId", userId);
         body.put("programId", programId);
         body.put("degree", degree);
-        body.put("inputs", inputs);
-        body.put("mode", debug ? "debug" : "regular");
-        return postJson("/runs", body);
-    }
-    public Map<String,Object> getRunStatus(long runId) throws IOException {
-        return getObject("/runs/status?id=" + runId);
-    }
-    public Map<String,Object> step(long runId) throws IOException {
-        return postJson("/runs/step", Map.of("runId", runId));
-    }
-    public Map<String,Object> resume(long runId) throws IOException {
-        return postJson("/runs/resume", Map.of("runId", runId));
-    }
-    public Map<String,Object> stop(long runId) throws IOException {
-        return postJson("/runs/stop", Map.of("runId", runId));
+        body.put("inputs", inputs == null ? List.of() : inputs);
+        body.put("mode", "debug");
+
+        Map<String,Object> s = (Map<String,Object>) json(post("/api/runs", body));
+        readRunState(s);
     }
 
-    // ---------- HTTP helpers ----------
-    private Map<String,Object> postForm(String path, Map<String,String> form) throws IOException {
-        HttpURLConnection c = open("POST", path);
-        c.setDoOutput(true);
-        c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8");
-        StringBuilder sb = new StringBuilder();
-        boolean first = true;
-        for (var e : form.entrySet()) {
-            if (!first) sb.append('&');
-            first = false;
-            sb.append(URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)).append('=')
-                    .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
-        }
-        try (OutputStream os = c.getOutputStream()) {
-            os.write(sb.toString().getBytes(StandardCharsets.UTF_8));
-        }
-        return readJsonObject(c);
+    public void dbgResume() throws Exception {
+        ensureRun();
+        Map<String,Object> s = (Map<String,Object>) json(post("/api/runs/resume", Map.of("runId", runId)));
+        readRunState(s);
     }
 
-    private Map<String,Object> getObject(String path) throws IOException {
-        HttpURLConnection c = open("GET", path);
-        return readJsonObject(c);
-    }
-    private List<Map<String,Object>> getArray(String path) throws IOException {
-        HttpURLConnection c = open("GET", path);
-        return readJsonArray(c);
-    }
-    private Map<String,Object> postJson(String path, Map<String,Object> body) throws IOException {
-        HttpURLConnection c = open("POST", path);
-        c.setDoOutput(true);
-        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        try (OutputStream os = c.getOutputStream()) {
-            os.write(MiniJson.stringify(body).getBytes(StandardCharsets.UTF_8));
-        }
-        return readJsonObject(c);
-    }
-    private HttpURLConnection open(String method, String path) throws IOException {
-        URL url = new URL(base + (path.startsWith("/") ? path : "/" + path));
-        HttpURLConnection c = (HttpURLConnection) url.openConnection();
-        c.setRequestMethod(method);
-        c.setRequestProperty("Accept", "application/json");
-        return c;
+    public void dbgStep() throws Exception {
+        ensureRun();
+        Map<String,Object> s = (Map<String,Object>) json(post("/api/runs/step", Map.of("runId", runId)));
+        readRunState(s);
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String,Object> readJsonObject(HttpURLConnection c) throws IOException {
-        int code = c.getResponseCode();
-        try (InputStream is = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream()) {
-            String s = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            return (Map<String, Object>) MiniJson.parse(s);
-        }
-    }
-    @SuppressWarnings("unchecked")
-    private List<Map<String,Object>> readJsonArray(HttpURLConnection c) throws IOException {
-        int code = c.getResponseCode();
-        try (InputStream is = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream()) {
-            String s = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            return (List<Map<String, Object>>) MiniJson.parse(s);
-        }
+    public void dbgStop() throws Exception {
+        ensureRun();
+        Map<String,Object> s = (Map<String,Object>) json(post("/api/runs/stop", Map.of("runId", runId)));
+        readRunState(s);
     }
 
-    // ---- Minimal JSON (same as before) ----
-    static final class MiniJson {
-        static Object parse(String s) { return new Parser(s).parseValue(); }
-        static String stringify(Object o) {
-            StringBuilder sb = new StringBuilder(); write(o, sb); return sb.toString();
-        }
-        @SuppressWarnings("unchecked")
-        private static void write(Object o, StringBuilder sb) {
-            if (o == null) { sb.append("null"); return; }
-            if (o instanceof String) { sb.append('"').append(((String)o).replace("\\","\\\\").replace("\"","\\\"")).append('"'); return; }
-            if (o instanceof Number || o instanceof Boolean) { sb.append(o.toString()); return; }
-            if (o instanceof Map) {
-                sb.append('{'); boolean first = true;
-                for (Map.Entry<String,Object> e : ((Map<String,Object>)o).entrySet()) {
-                    if (!first) sb.append(','); first = false;
-                    sb.append('"').append(e.getKey().replace("\\","\\\\").replace("\"","\\\"")).append("\":");
-                    write(e.getValue(), sb);
-                } sb.append('}'); return;
+    public boolean isHalted() { return halted; }
+    public int getCycles() { return cycles; }
+    public int getCurrentY() { return vars.getOrDefault("y", 0); }
+    public int getPcIndex() { return pc; }
+    public String getPcText() {
+        if (pc < 0) return "(halted)";
+        return "PC = " + pc + (currentInstruction == null ? "" : "  |  " + currentInstruction);
+    }
+    public Map<String,Integer> getVars() { return vars; }
+    public Map<String,Integer> getChanged() { return changed; }
+    public String getLog() { return log.toString(); }
+
+    public List<Object> getDebuggerRows() throws Exception {
+        // show current expanded rows at the same degree the run started with.
+        if (this.lastDegree <= 0) return getOriginalRows();
+        return getExpandedRows(this.lastDegree);
+    }
+
+    /* ===== internals ===== */
+
+    private List<Object> originalRows;
+    private final Map<Integer,List<Object>> expandedCache = new HashMap<>();
+    private int lastDegree = 0;
+
+    private void ensureUser() throws Exception {
+        if (userId != null) return;
+        // Minimal auto-login: create/get "Noa" as in MainController demo
+        var form = new String("username=Noa").getBytes(StandardCharsets.UTF_8);
+        var r = http.send(HttpRequest.newBuilder(URI.create(BASE + "/api/login"))
+                .header("Content-Type","application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(form)).build(), HttpResponse.BodyHandlers.ofString());
+        Map<String,Object> me = (Map<String,Object>) json(r.body());
+        userId = String.valueOf(me.get("userId"));
+    }
+
+    private void ensureRun() {
+        if (runId == null) throw new IllegalStateException("No active debug run. Start first.");
+    }
+
+    private void readRunState(Map<String,Object> s) {
+        this.runId = ((Number)s.get("runId")).longValue();
+        this.halted = Boolean.TRUE.equals(s.get("finished")) || "DONE".equalsIgnoreCase(String.valueOf(s.get("state")));
+        this.pc = ((Number) s.getOrDefault("pc", -1)).intValue();
+        this.cycles = ((Number) s.getOrDefault("cycles", 0)).intValue();
+        this.currentInstruction = Objects.toString(s.get("currentInstruction"), null);
+        this.lastDegree = Math.max(lastDegree, 0); // we keep degree separately
+        Object mv = s.get("variables");
+        LinkedHashMap<String,Integer> newVars = new LinkedHashMap<>();
+        if (mv instanceof Map<?,?> m) {
+            for (var e : m.entrySet()) {
+                newVars.put(String.valueOf(e.getKey()), ((Number)e.getValue()).intValue());
             }
-            if (o instanceof List) {
-                sb.append('['); boolean first = true;
-                for (Object x : (List<?>)o) { if (!first) sb.append(','); first=false; write(x, sb); }
-                sb.append(']'); return;
-            }
-            sb.append('"').append(String.valueOf(o)).append('"');
         }
-        private static final class Parser {
-            private final String s; private int i=0; Parser(String s){this.s=s;}
-            Object parseValue(){ skip(); if(i>=s.length()) return null; char c=s.charAt(i);
-                if(c=='{') return parseObj(); if(c=='[') return parseArr(); if(c=='"') return parseStr();
-                if(c=='t'||c=='f') return parseBool(); if(c=='n'){i+=4;return null;} return parseNum();}
-            Map<String,Object> parseObj(){ Map<String,Object> m=new LinkedHashMap<>(); i++; skip();
-                if(s.charAt(i)=='}'){i++; return m;} while(true){ String k=parseStr(); skip(); i++; // :
-                    Object v=parseValue(); m.put(k,v); skip(); char c=s.charAt(i++); if(c=='}') break; } return m; }
-            List<Object> parseArr(){ List<Object>a=new ArrayList<>(); i++; skip();
-                if(s.charAt(i)==']'){i++; return a;} while(true){ Object v=parseValue(); a.add(v); skip();
-                    char c=s.charAt(i++); if(c==']') break; } return a; }
-            String parseStr(){ StringBuilder sb=new StringBuilder(); i++;
-                while(true){ char c=s.charAt(i++); if(c=='"') break;
-                    if(c=='\\'){ char n=s.charAt(i++); if(n=='"'||n=='\\') sb.append(n); else if(n=='n') sb.append('\n'); else if(n=='t') sb.append('\t'); else sb.append(n); }
-                    else sb.append(c); } return sb.toString(); }
-            Boolean parseBool(){ if(s.startsWith("true",i)){i+=4; return true;} i+=5; return false; }
-            Number parseNum(){ int j=i; while(i<s.length()){ char c=s.charAt(i);
-                if((c>='0'&&c<='9')||c=='-'||c=='+') i++; else break; }
-                String t=s.substring(j,i);
-                try { return Integer.parseInt(t); } catch(Exception ignore) {}
-                try { return Long.parseLong(t); } catch(Exception ignore) {}
-                return Double.parseDouble(t); }
-            void skip(){ while(i<s.length()){ char c=s.charAt(i);
-                if(c==' '||c=='\n'||c=='\r'||c=='\t') i++; else break; } }
+        // compute changed vars
+        Map<String,Integer> diff = new LinkedHashMap<>();
+        for (var e : newVars.entrySet()) {
+            Integer old = vars.get(e.getKey());
+            if (old == null || !old.equals(e.getValue())) diff.put(e.getKey(), e.getValue());
+        }
+        this.changed = diff;
+        this.vars = newVars;
+        if (currentInstruction != null) log.append(currentInstruction).append('\n');
+    }
+
+    /* ===== HTTP helpers ===== */
+
+    private Object json(String s) throws RuntimeException {
+        return Mini.parse(s);
+    }
+
+    private String get(String pathAndQuery) throws IOException, InterruptedException {
+        var r = http.send(HttpRequest.newBuilder(URI.create(BASE + pathAndQuery)).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() / 100 != 2) throw new IllegalStateException("GET " + pathAndQuery + " -> " + r.statusCode() + " : " + r.body());
+        return r.body();
+    }
+
+    private String post(String path, Map<String,Object> body) throws IOException, InterruptedException {
+        var r = http.send(HttpRequest.newBuilder(URI.create(BASE + path))
+                        .header("Content-Type","application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(Mini.stringify(body), StandardCharsets.UTF_8)).build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() / 100 != 2) throw new IllegalStateException("POST " + path + " -> " + r.statusCode() + " : " + r.body());
+        return r.body();
+    }
+
+    private String postRaw(String path, String contentType, byte[] bytes) throws IOException, InterruptedException {
+        var r = http.send(HttpRequest.newBuilder(URI.create(BASE + path))
+                        .header("Content-Type", contentType)
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(bytes)).build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() / 100 != 2) throw new IllegalStateException("POST " + path + " -> " + r.statusCode() + " : " + r.body());
+        return r.body();
+    }
+
+    private static String enc(String s){ return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8); }
+
+    private static Multipart multipartUpload(File xml, Map<String,String> fields) throws IOException {
+        String boundary = "----Semu" + System.currentTimeMillis();
+        var out = new ByteArrayOutputStream();
+        var w = new OutputStreamWriter(out, StandardCharsets.UTF_8);
+
+        for (var e : fields.entrySet()) {
+            w.write("--" + boundary + "\r\n");
+            w.write("Content-Disposition: form-data; name=\"" + e.getKey() + "\"\r\n\r\n");
+            w.write(e.getValue() + "\r\n");
+        }
+        w.write("--" + boundary + "\r\n");
+        w.write("Content-Disposition: form-data; name=\"file\"; filename=\"" + xml.getName() + "\"\r\n");
+        w.write("Content-Type: application/xml\r\n\r\n");
+        w.flush();
+        Files.copy(xml.toPath(), out);
+        w.write("\r\n--" + boundary + "--\r\n");
+        w.flush();
+        return new Multipart("multipart/form-data; boundary=" + boundary, out.toByteArray());
+    }
+
+    private record Multipart(String contentType, byte[] bytes){}
+
+    /* === Minimal JSON parser from StartRunServlet.Mini === */
+    static final class Mini {
+        static Object parse(String s){ return new P(s==null? "": s).v(); }
+        static String stringify(Object o){ StringBuilder b=new StringBuilder(); w(o,b); return b.toString(); }
+        @SuppressWarnings("unchecked") static void w(Object o,StringBuilder b){
+            if(o==null){b.append("null");return;}
+            if(o instanceof String){b.append('"').append(((String)o).replace("\\","\\\\").replace("\"","\\\"")).append('"');return;}
+            if(o instanceof Number||o instanceof Boolean){b.append(o.toString());return;}
+            if(o instanceof Map){b.append('{');boolean f=true;for(var e:((Map<String,Object>)o).entrySet()){if(!f)b.append(',');f=false;w(String.valueOf(e.getKey()),b);b.append(':');w(e.getValue(),b);}b.append('}');return;}
+            if(o instanceof List){b.append('[');boolean f=true;for(Object x:(List<?>)o){if(!f)b.append(',');f=false;w(x,b);}b.append(']');return;}
+            b.append('"').append(String.valueOf(o)).append('"');
+        }
+        static final class P {
+            final String s; int i=0; P(String s){this.s=s;}
+            void sp(){ while(i<s.length()){ char c=s.charAt(i); if(c==' '||c=='\n'||c=='\r'||c=='\t') i++; else break; } }
+            char peek(){ return i<s.length()? s.charAt(i): '\0'; }
+            Object v(){ sp(); char c=peek();
+                if(c=='{') return o();
+                if(c=='[') return a();
+                if(c=='"') return st();
+                if(s.startsWith("true",i)){ i+=4; return true; }
+                if(s.startsWith("false",i)){ i+=5; return false; }
+                if(s.startsWith("null",i)){ i+=4; return null; }
+                return num();
+            }
+            Map<String,Object> o(){
+                Map<String,Object> m=new LinkedHashMap<>(); i++; sp();
+                if(peek()=='}'){ i++; return m; }
+                while(true){
+                    sp(); String k=(String)st();
+                    if (peek()!=':') throw new IllegalArgumentException("Expected ':'");
+                    i++; Object val=v(); m.put(k,val); sp();
+                    char c=peek(); if(c==','){ i++; continue; } if(c=='}'){ i++; break; }
+                    throw new IllegalArgumentException("Bad object sep at "+i);
+                }
+                return m;
+            }
+            List<Object> a(){
+                List<Object> l=new ArrayList<>(); i++; sp();
+                if(peek()==']'){ i++; return l; }
+                while(true){
+                    Object val=v(); l.add(val); sp();
+                    char c=peek(); if(c==','){ i++; continue; } if(c==']'){ i++; break; }
+                    throw new IllegalArgumentException("Bad array sep at "+i);
+                }
+                return l;
+            }
+            Object st(){
+                StringBuilder b=new StringBuilder(); i++;
+                while(i<s.length()){
+                    char c=s.charAt(i++);
+                    if(c=='"') break;
+                    if(c=='\\'){
+                        if(i>=s.length()) break;
+                        char n=s.charAt(i++);
+                        if(n=='"'||n=='\\'||n=='/') b.append(n);
+                        else if(n=='n') b.append('\n');
+                        else if(n=='t') b.append('\t');
+                        else if(n=='r') b.append('\r');
+                        else b.append(n);
+                    } else b.append(c);
+                }
+                return b.toString();
+            }
+            Number num(){
+                int j=i;
+                while(i<s.length()){
+                    char c=s.charAt(i);
+                    if((c>='0' && c<='9') || c=='-' || c=='+' || c=='.' || c=='e' || c=='E') i++;
+                    else break;
+                }
+                String t = s.substring(j,i).trim();
+                if(t.isEmpty() || "-".equals(t) || "+".equals(t)) return 0;
+                try { return Integer.parseInt(t); } catch(Exception ignore){}
+                try { return Long.parseLong(t); } catch(Exception ignore){}
+                try { return Double.parseDouble(t); } catch(Exception ignore){}
+                return 0;
+            }
         }
     }
 }

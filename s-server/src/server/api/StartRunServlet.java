@@ -21,6 +21,7 @@ public class StartRunServlet extends HttpServlet {
         resp.setContentType("application/json");
 
         Map<String, Object> body = readJsonObject(req);
+
         String userId    = Objects.toString(body.get("userId"), "");
         String programId = Objects.toString(body.get("programId"), "");
         int degree       = ((Number) body.getOrDefault("degree", 0)).intValue();
@@ -44,51 +45,115 @@ public class StartRunServlet extends HttpServlet {
             out.put("cycles", s.cycles);
             out.put("variables", s.vars);
             out.put("finished", s.finished);
-            resp.getWriter().write(json(out));
+            resp.getWriter().write(Mini.stringify(out));
         } catch (Exception ex) {
             resp.setStatus(400);
             resp.getWriter().write("{\"error\":\"" + ex.getMessage().replace("\"","'") + "\"}");
         }
     }
 
-    // ---- JSON helpers ----
     @SuppressWarnings("unchecked")
     private Map<String,Object> readJsonObject(HttpServletRequest req) throws IOException {
         String s = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        // very small tolerant parser: try Jackson-like structure via org.json is not allowed,
-        // so we accept an empty map if parsing isn't available. Client code sends correct JSON.
-        return (s == null || s.isBlank()) ? new LinkedHashMap<>() : Mini.parseObj(s);
+        Object o = Mini.parse(s);
+        return (o instanceof Map) ? (Map<String,Object>) o : new LinkedHashMap<>();
     }
 
-    private static String json(Object o) { return Mini.stringify(o); }
-
-    /* Minimal JSON (object/array/string/number/boolean/null) */
+    /** Minimal JSON (object/array/string/number/boolean/null) parser + writer */
     static final class Mini {
-        static Map<String,Object> parseObj(String s){ Object v=parse(s); return v instanceof Map? (Map<String,Object>)v:new LinkedHashMap<>(); }
-        static Object parse(String s){ return new P(s).v(); }
+        static Object parse(String s){ return new P(s==null? "": s).v(); }
+        static Map<String,Object> parseObj(String s){ Object o=parse(s); return o instanceof Map? (Map<String,Object>)o : new LinkedHashMap<>(); }
         static String stringify(Object o){ StringBuilder b=new StringBuilder(); w(o,b); return b.toString(); }
-        @SuppressWarnings("unchecked") static void w(Object o,StringBuilder b){
+
+        @SuppressWarnings("unchecked")
+        static void w(Object o,StringBuilder b){
             if(o==null){b.append("null");return;}
             if(o instanceof String){b.append('"').append(((String)o).replace("\\","\\\\").replace("\"","\\\"")).append('"');return;}
             if(o instanceof Number||o instanceof Boolean){b.append(o.toString());return;}
-            if(o instanceof Map){b.append('{');boolean f=true;for(var e:((Map<String,Object>)o).entrySet()){if(!f)b.append(',');f=false;b.append('"').append(e.getKey().replace("\\","\\\\").replace("\"","\\\"")).append("\":");w(e.getValue(),b);}b.append('}');return;}
-            if(o instanceof List){b.append('[');boolean f=true;for(Object x:(List<?>)o){if(!f)b.append(',');f=false;w(x,b);}b.append(']');return;}
+            if(o instanceof Map){b.append('{');boolean first=true;for(var e:((Map<String,Object>)o).entrySet()){if(!first)b.append(',');first=false;w(String.valueOf(e.getKey()),b);b.append(':');w(e.getValue(),b);}b.append('}');return;}
+            if(o instanceof List){b.append('[');boolean first=true;for(Object x:(List<?>)o){if(!first)b.append(',');first=false;w(x,b);}b.append(']');return;}
             b.append('"').append(String.valueOf(o)).append('"');
         }
-        static final class P{String s;int i;P(String s){this.s=s;}void sp(){while(i<s.length()){char c=s.charAt(i);if(c==' '||c=='\n'||c=='\r'||c=='\t')i++;else break;}}
-            Object v(){sp(); if(i>=s.length()) return null; char c=s.charAt(i);
-                if(c=='{')return o(); if(c=='[')return a(); if(c=='"')return st();
-                if(s.startsWith("true",i)){i+=4;return true;} if(s.startsWith("false",i)){i+=5;return false;}
-                if(s.startsWith("null",i)){i+=4;return null;} return num();}
-            Map<String,Object> o(){Map<String,Object>m=new LinkedHashMap<>();i++;sp(); if(s.charAt(i)=='}'){i++;return m;}
-                while(true){String k=st(); sp(); i++; // :
-                    Object v=v(); m.put(k,v); sp(); char c=s.charAt(i++); if(c=='}')break;}
-                return m;}
-            List<Object> a(){List<Object>l=new ArrayList<>();i++;sp(); if(s.charAt(i)==']'){i++;return l;}
-                while(true){Object v=v(); l.add(v); sp(); char c=s.charAt(i++); if(c==']')break;} return l;}
-            String st(){StringBuilder b=new StringBuilder();i++; while(true){char c=s.charAt(i++); if(c=='"')break; if(c=='\\'){char n=s.charAt(i++); if(n=='"'||n=='\\')b.append(n); else if(n=='n')b.append('\n'); else if(n=='t')b.append('\t'); else b.append(n);} else b.append(c);} return b.toString();}
-            Number num(){int j=i; while(i<s.length()){char c=s.charAt(i); if((c>='0'&&c<='9')||c=='-'||c=='+')i++; else break;} String t=s.substring(j,i);
-                try{return Integer.parseInt(t);}catch(Exception e){} try{return Long.parseLong(t);}catch(Exception e){} return Double.parseDouble(t);}
+
+        static final class P {
+            final String s; int i=0; P(String s){this.s=s;}
+            void sp(){ while(i<s.length()){ char c=s.charAt(i); if(c==' '||c=='\n'||c=='\r'||c=='\t') i++; else break; } }
+            char peek(){ return i<s.length()? s.charAt(i): '\0'; }
+            void expect(char c){ sp(); if(peek()!=c) throw new IllegalArgumentException("Expected '"+c+"' at "+i); i++; }
+
+            Object v(){ sp(); char c=peek();
+                if(c=='{') return o();
+                if(c=='[') return a();
+                if(c=='"') return st();
+                if(s.startsWith("true",i)){ i+=4; return true; }
+                if(s.startsWith("false",i)){ i+=5; return false; }
+                if(s.startsWith("null",i)){ i+=4; return null; }
+                return num();
+            }
+
+            Map<String,Object> o(){
+                Map<String,Object> m=new LinkedHashMap<>();
+                i++; sp();
+                if(peek()=='}'){ i++; return m; }
+                while(true){
+                    sp(); String k=(String)st();
+                    expect(':');
+                    Object val=v(); m.put(k,val);
+                    sp(); char c=peek();
+                    if(c==','){ i++; continue; }
+                    if(c=='}'){ i++; break; }
+                    throw new IllegalArgumentException("Bad object sep at "+i);
+                }
+                return m;
+            }
+
+            List<Object> a(){
+                List<Object> l=new ArrayList<>();
+                i++; sp();
+                if(peek()==']'){ i++; return l; }
+                while(true){
+                    Object val=v(); l.add(val);
+                    sp(); char c=peek();
+                    if(c==','){ i++; continue; }
+                    if(c==']'){ i++; break; }
+                    throw new IllegalArgumentException("Bad array sep at "+i);
+                }
+                return l;
+            }
+
+            Object st(){
+                StringBuilder b=new StringBuilder();
+                i++; // open "
+                while(i<s.length()){
+                    char c=s.charAt(i++);
+                    if(c=='"') break;
+                    if(c=='\\'){
+                        if(i>=s.length()) break;
+                        char n=s.charAt(i++);
+                        if(n=='"'||n=='\\'||n=='/') b.append(n);
+                        else if(n=='n') b.append('\n');
+                        else if(n=='t') b.append('\t');
+                        else if(n=='r') b.append('\r');
+                        else b.append(n);
+                    } else b.append(c);
+                }
+                return b.toString();
+            }
+
+            Number num(){
+                int j=i;
+                while(i<s.length()){
+                    char c=s.charAt(i);
+                    if((c>='0' && c<='9') || c=='-' || c=='+' || c=='.' || c=='e' || c=='E') i++;
+                    else break;
+                }
+                String t = s.substring(j,i).trim();
+                if(t.isEmpty() || "-".equals(t) || "+".equals(t)) return 0;
+                try { return Integer.parseInt(t); } catch(Exception ignore){}
+                try { return Long.parseLong(t); } catch(Exception ignore){}
+                try { return Double.parseDouble(t); } catch(Exception ignore){}
+                return 0;
+            }
         }
     }
 }

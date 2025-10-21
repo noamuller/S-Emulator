@@ -33,13 +33,13 @@ public class RunResumeServlet extends HttpServlet {
         out.put("cycles", s.cycles);
         out.put("variables", s.vars);
         out.put("finished", s.finished);
-        resp.getWriter().write(json(out));
+        resp.getWriter().write(StartRunServlet.Mini.stringify(out));
     }
 
     @SuppressWarnings("unchecked")
     private Map<String,Object> readJsonObject(HttpServletRequest req) throws IOException {
         String s = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        return (s == null || s.isBlank()) ? new LinkedHashMap<>() : StartRunServlet.Mini.parseObj(s);
+        Object o = StartRunServlet.Mini.parse(s);
+        return (o instanceof Map) ? (Map<String,Object>) o : new LinkedHashMap<>();
     }
-    private static String json(Object o){ return StartRunServlet.Mini.stringify(o); }
 }
