@@ -1,13 +1,16 @@
 package server.api;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import java.util.List;
+import java.util.ArrayList;
 
 import server.core.ProgramStore;
-// We will reuse the existing JSON mini helper from StartRunServlet:
 import static server.api.StartRunServlet.Mini;
 
 import sengine.Program;
@@ -26,8 +29,8 @@ import java.util.Map;
 @WebServlet(name = "ProgramMetaServlet", urlPatterns = {"/api/programs/meta"})
 public class ProgramMetaServlet extends HttpServlet {
 
-    // ---- DTO used to build JSON easily -------------------------------------
-    static final class Row {
+    // Row DTO for JSON
+    public static final class Row {
         final int index;
         final String type;
         final String label;
@@ -49,7 +52,6 @@ public class ProgramMetaServlet extends HttpServlet {
         String userId    = req.getParameter("userId");
         String programId = req.getParameter("programId");
 
-        // Look up the uploaded program XML for this user
         ProgramStore.ProgramEntry e = ProgramStore.get()
                 .list(userId)
                 .stream()
@@ -63,17 +65,12 @@ public class ProgramMetaServlet extends HttpServlet {
             return;
         }
 
-        // Parse the XML that we store in memory
         Program p = parseProgramFromXmlString(e.getXml());
         int maxDeg = safeMaxDegree(p);
-
-        // Try Program.rendered(), else expandToDegree(0)
         Program.Rendered rendered = obtainRendered(p);
 
-        // Convert rendered list to simple rows
         List<Row> rows = asRows(rendered);
 
-        // Build the response map
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("maxDegree", maxDeg);
 
@@ -92,26 +89,20 @@ public class ProgramMetaServlet extends HttpServlet {
         writeJson(resp, out);
     }
 
-    // ---- JSON writer (uses Mini helper you already have) --------------------
-
     private static void writeJson(HttpServletResponse resp, Map<String, Object> obj) throws IOException {
         resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
         resp.setContentType("application/json");
         resp.getWriter().write(Mini.stringify(obj));
     }
 
-    // ---- Program parsing (reflection covers parse(File) vs parseFromXml(File)) ----
-
     private static Program parseProgramFromXmlString(String xml) throws ServletException {
         try {
             File tmp = File.createTempFile("program-", ".xml");
             java.nio.file.Files.writeString(tmp.toPath(), xml == null ? "" : xml, StandardCharsets.UTF_8);
             try {
-                // Prefer parseFromXml(File)
                 Method m = ProgramParser.class.getMethod("parseFromXml", File.class);
                 return (Program) m.invoke(null, tmp);
             } catch (NoSuchMethodException ignore) {
-                // Fallback to parse(File)
                 Method m = ProgramParser.class.getMethod("parse", File.class);
                 return (Program) m.invoke(null, tmp);
             } finally {
@@ -134,11 +125,9 @@ public class ProgramMetaServlet extends HttpServlet {
 
     private static Program.Rendered obtainRendered(Program p) throws ServletException {
         try {
-            // Try p.rendered()
             Method m = Program.class.getMethod("rendered");
             return (Program.Rendered) m.invoke(p);
         } catch (NoSuchMethodException nsme) {
-            // Fallback: p.expandToDegree(0)
             try {
                 Method m = Program.class.getMethod("expandToDegree", int.class);
                 return (Program.Rendered) m.invoke(p, 0);
@@ -150,33 +139,100 @@ public class ProgramMetaServlet extends HttpServlet {
         }
     }
 
-    // ---- Rendered -> Rows (via reflection so it compiles with your Instruction) ----
+    public static List<Row> asRows(Program.Rendered r) throws ServletException{
+        try {
+            // Get the instructions list from Program.Rendered
+            List<?> list;
+            try {
+                // Prefer a public accessor if it exists
+                var m = r.getClass().getMethod("list");
+                list = (List<?>) m.invoke(r);
+            } catch (NoSuchMethodException e) {
+                // Fall back to the field
+                var f = r.getClass().getDeclaredField("list");
+                f.setAccessible(true);
+                list = (List<?>) f.get(r);
+            }
 
-    private static List<Row> asRows(Program.Rendered r) throws ServletException {
-        List<Row> out = new ArrayList<>(r.list.size());
-        int idx = 0;
-        for (Object inst : r.list) {
-            String type  = stringProp(inst, "getType", "getKind", "kind");
-            String label = stringProp(inst, "getLabel", "label");
-            String text  = stringProp(inst, "getInstructionText", "text");
-            int cycles   = intMethod(inst, "cycles", 0);
-            out.add(new Row(idx++, nullToEmpty(type), nullToEmpty(label), nullToEmpty(text), Math.max(0, cycles)));
+            List<Row> out = new ArrayList<>(list.size());
+            AtomicInteger index = new AtomicInteger(0);
+
+            for (Object inst : list) {
+                // IMPORTANT: never access fields like inst.kind directly.
+                String kind  = readString(inst, "getKind",  "kind");
+                String label = readString(inst, "getLabel", "label");
+                String text  = readString(inst, "getText",  "text");
+                int cycles   = readInt   (inst, "getCycles","cycles");
+
+                out.add(new Row(index.getAndIncrement(), kind, label, text, cycles));
+            }
+            return out;
+        } catch (ReflectiveOperationException re) {
+            throw new ServletException("Failed to convert Program.Rendered to rows", re);
         }
-        return out;
     }
+
+
+
+    private static String readString(Object obj, String publicMethod, String altMethodOrField)
+            throws ReflectiveOperationException {
+        // Try a public getter first
+        try {
+            var m = obj.getClass().getMethod(publicMethod);
+            Object v = m.invoke(obj);
+            return v == null ? "" : String.valueOf(v);
+        } catch (NoSuchMethodException ignore) { /* fall through */ }
+
+        // Try a non-public method with the same simple name
+        try {
+            var m = obj.getClass().getDeclaredMethod(altMethodOrField);
+            m.setAccessible(true);
+            Object v = m.invoke(obj);
+            return v == null ? "" : String.valueOf(v);
+        } catch (NoSuchMethodException ignore) { /* fall through */ }
+
+        // Finally, try a field
+        var f = obj.getClass().getDeclaredField(altMethodOrField);
+        f.setAccessible(true);
+        Object v = f.get(obj);
+        return v == null ? "" : String.valueOf(v);
+    }
+
+    private static int readInt(Object obj, String publicMethod, String altMethodOrField)
+            throws ReflectiveOperationException {
+        // Try a public getter first
+        try {
+            var m = obj.getClass().getMethod(publicMethod);
+            Object v = m.invoke(obj);
+            return v == null ? 0 : ((Number) v).intValue();
+        } catch (NoSuchMethodException ignore) { /* fall through */ }
+
+        // Try a non-public method
+        try {
+            var m = obj.getClass().getDeclaredMethod(altMethodOrField);
+            m.setAccessible(true);
+            Object v = m.invoke(obj);
+            return v == null ? 0 : ((Number) v).intValue();
+        } catch (NoSuchMethodException ignore) { /* fall through */ }
+
+        // Finally, try a field
+        var f = obj.getClass().getDeclaredField(altMethodOrField);
+        f.setAccessible(true);
+        Object v = f.get(obj);
+        return v == null ? 0 : ((Number) v).intValue();
+    }
+
+
 
     private static String nullToEmpty(String s) { return s == null ? "" : s; }
 
-    // tries getters first, then public field
     private static String stringProp(Object obj, String... candidates) throws ServletException {
         for (String name : candidates) {
             try {
-                // try method with no args
                 Method m = obj.getClass().getMethod(name);
                 Object v = m.invoke(obj);
                 return v == null ? null : String.valueOf(v);
             } catch (NoSuchMethodException ignore) {
-                // try field
                 try {
                     Field f = obj.getClass().getField(name);
                     Object v = f.get(obj);
