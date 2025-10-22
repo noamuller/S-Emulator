@@ -17,25 +17,25 @@ import java.util.stream.Collectors;
 
 public class MainController {
 
-    //toolbar
+    // toolbar
     @FXML private TextField loadedPathField;
     @FXML private ComboBox<String> functionCombo;
     @FXML private TextField degreeField;
     @FXML private TextField maxDegreeField;
 
-    //instructions (execution trace)
+    // instructions (execution trace)
     @FXML private TableView<Object> instructionTable;
     @FXML private TableColumn<Object, String> colIndex, colType, colLabel, colInstruction, colCycles;
 
-    //debug
+    // debug
     @FXML private Label pcLabel, cyclesLabel, haltedLabel;
     @FXML private TextArea debugLogArea;
 
-    //inputs/results
+    // inputs/results
     @FXML private TextField singleInputField;
     @FXML private TextArea inputsArea, resultsArea;
 
-    //history
+    // history
     @FXML private TableView<HistoryRow> historyTable;
     @FXML private TableColumn<HistoryRow, String> hColRun, hColDegree, hColInputs, hColY, hColCycles;
     private final ObservableList<HistoryRow> history = FXCollections.observableArrayList();
@@ -192,7 +192,7 @@ public class MainController {
     }
     @FXML private void onRunClear() { inputsArea.clear(); resultsArea.clear(); }
 
-    // Run (regular)
+    // Run (regular) — supports both server styles (with or without runId)
     @FXML
     private void onRunExecute() {
         try {
@@ -202,17 +202,42 @@ public class MainController {
             var inputs = parseInputs(inputsArea.getText());
 
             var start = engine.startRun(userId, programId, deg, inputs, false);
-            long runId = ((Number) start.get("runId")).longValue();
-            var st = engine.getRunStatus(runId);
 
-            int y = getYFromVars(st);
-            int cycles = ((Number) st.getOrDefault("cycles", 0)).intValue();
-            resultsArea.setText("y = " + y + System.lineSeparator() + "cycles = " + cycles);
+            if (start.containsKey("y")) {
+                // Style A: server returned full result
+                int y = ((Number) start.getOrDefault("y", 0)).intValue();
+                int cycles = ((Number) start.getOrDefault("cycles", 0)).intValue();
+                resultsArea.setText("y = " + y + System.lineSeparator() + "cycles = " + cycles);
+                runCounter++;
+                history.add(new HistoryRow(runCounter, deg, inputsAsString(inputs), y, cycles));
 
-            runCounter++;
-            history.add(new HistoryRow(runCounter, deg, inputsAsString(inputs), y, cycles));
+                // (Optional) trace array
+                Object traceObj = start.get("trace");
+                if (traceObj instanceof List<?> list) {
+                    traceRows.clear();
+                    traceIndexCounter = 0;
+                    for (Object o : list) {
+                        if (o instanceof Map<?,?> m) {
+                            String instr = String.valueOf(m.getOrDefault("instr",""));
+                            int cyc = toInt(m.getOrDefault("cycles", 0));
+                            traceRows.add(new TraceRow(++traceIndexCounter, instr, cyc));
+                        }
+                    }
+                }
+            } else {
+                // Style B: server returned runId → poll status
+                long runId = ((Number) start.get("runId")).longValue();
+                var st = engine.getRunStatus(runId);
 
-            appendTraceFromStatus(st);
+                int y = getYFromVars(st);
+                int cycles = ((Number) st.getOrDefault("cycles", 0)).intValue();
+                resultsArea.setText("y = " + y + System.lineSeparator() + "cycles = " + cycles);
+
+                runCounter++;
+                history.add(new HistoryRow(runCounter, deg, inputsAsString(inputs), y, cycles));
+
+                appendTraceFromStatus(st);
+            }
 
         } catch (Exception ex) {
             showError("Run failed", ex);
@@ -285,15 +310,34 @@ public class MainController {
     private void refreshFromStatus(Map<String, Object> status) {
         pcLabel.setText(String.valueOf(status.getOrDefault("pc", -1)));
         cyclesLabel.setText(String.valueOf(status.getOrDefault("cycles", 0)));
-        haltedLabel.setText(Boolean.TRUE.equals(status.get("finished")) ? "true" : "false");
+        boolean finished = isFinished(status);
+        haltedLabel.setText(finished ? "true" : "false");
 
         appendTraceFromStatus(status);
         renderVarsFromStatus(status);
         highlightPcFromStatus(status);
     }
 
+    private boolean isFinished(Map<String,Object> st) {
+        // accept either "finished" (boolean) or "halted" (boolean)
+        Object fin = st.get("finished");
+        if (fin instanceof Boolean b) return b;
+        Object h = st.get("halted");
+        return (h instanceof Boolean hb) ? hb : false;
+    }
+
     private void appendTraceFromStatus(Map<String, Object> status) {
-        String instr = Objects.toString(status.get("currentInstruction"), "");
+        // support either "currentInstruction" string or nested "current.instr"
+        String instr = null;
+        Object cur = status.get("current");
+        if (cur instanceof Map<?,?> m) {
+            Object x = m.get("instr");
+            if (x != null) instr = String.valueOf(x);
+        }
+        if (instr == null) {
+            Object s = status.get("currentInstruction");
+            if (s != null) instr = String.valueOf(s);
+        }
         int cycles = ((Number) status.getOrDefault("cycles", 0)).intValue();
         if (instr != null && !instr.isBlank()) {
             traceRows.add(new TraceRow(++traceIndexCounter, instr, cycles));
@@ -339,7 +383,7 @@ public class MainController {
         if (currentRunId == null) return;
         try {
             var st = engine.getRunStatus(currentRunId);
-            boolean finished = Boolean.TRUE.equals(st.get("finished"));
+            boolean finished = isFinished(st);
             if (!finished) return;
 
             int y = getYFromVars(st);

@@ -1,38 +1,41 @@
 package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import server.core.EngineFacade;
+import server.core.EngineFacade.DebugState;
+import server.core.SimpleJson;
+
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-import server.core.RunManager;
-
-@WebServlet(name = "RunStatusServlet", urlPatterns = {"/api/runs/status"})
+@WebServlet("/api/runs/status")
 public class RunStatusServlet extends HttpServlet {
-
-    private final RunManager runs = RunManager.get();
-
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
-        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        resp.setContentType("application/json");
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json; charset=UTF-8");
+        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
 
-        long id = Long.parseLong(req.getParameter("id"));
-        var s = runs.get(id);
+        String json = req.getReader().lines().collect(Collectors.joining("\n"));
+        Map<String,Object> body = SimpleJson.parse(json);
+        String runId = String.valueOf(body.get("runId"));
 
-        Map<String,Object> out = new LinkedHashMap<>();
-        out.put("runId", s.id);
-        out.put("state", s.finished ? "DONE" : "PAUSED");
-        out.put("pc", s.pc);
-        out.put("currentInstruction", s.currentInstruction);
-        out.put("cycles", s.cycles);
-        out.put("variables", s.vars);
-        out.put("finished", s.finished);
-        resp.getWriter().write(json(out));
+        try {
+            DebugState st = facade.status(runId);
+            SimpleJson.write(resp.getWriter(), Map.of(
+                    "runId", st.runId(),
+                    "pc", st.pc(),
+                    "cycles", st.cycles(),
+                    "halted", st.halted(),
+                    "variables", st.variables(),
+                    "current", StartRunServlet.traceToMap(st.current())
+            ));
+        } catch (Exception ex) {
+            resp.setStatus(400);
+            SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
+        }
     }
-
-    private static String json(Object o){ return StartRunServlet.Mini.stringify(o); }
 }

@@ -1,38 +1,37 @@
 package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import server.core.EngineFacade;
+import server.core.SimpleJson;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
-import server.core.UserStore;
-
-@WebServlet(name = "LoginServlet", urlPatterns = {"/api/login"})
+@WebServlet("/api/login")
 public class LoginServlet extends HttpServlet {
-
-    private final UserStore users = UserStore.get();
-
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
-        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        resp.setContentType("application/json");
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json; charset=UTF-8");
+        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
 
-        String username = req.getParameter("username");
-        if (username == null || username.isBlank()) {
-            resp.setStatus(400);
-            resp.getWriter().write("{\"error\":\"username is required\"}");
-            return;
-        }
-        var u = users.loginOrCreate(username.trim());
+        String json = req.getReader().lines().collect(Collectors.joining("\n"));
+        Map<String,Object> body = SimpleJson.parse(json);
+        String username = String.valueOf(body.getOrDefault("username", "guest"));
 
-        Map<String,Object> out = new LinkedHashMap<>();
-        out.put("userId", u.getId());
-        out.put("username", u.getUsername());
-        out.put("credits", u.getCredits());
-        resp.getWriter().write(StartRunServlet.Mini.stringify(out));
+        // For now: create user id from name (or generate) and ensure credits exist
+        String userId = username.isBlank() ? UUID.randomUUID().toString() : username;
+        facade.chargeCredits(userId, 0); // ensure user exists (no-op top-up)
+
+        var credits = facade.getCredits(userId);
+        SimpleJson.write(resp.getWriter(), Map.of(
+                "userId", credits.userId(),
+                "username", username,
+                "credits", credits.credits()
+        ));
     }
 }

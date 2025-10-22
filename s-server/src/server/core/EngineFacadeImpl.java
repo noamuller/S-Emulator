@@ -1,9 +1,8 @@
 package server.core;
 
-import sengine.*; // your s-engine package: ProgramParser, Program, Runner, Debugger, Instruction, etc.
+import sengine.*; // replace with your real s-engine package names
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class EngineFacadeImpl implements EngineFacade {
@@ -12,7 +11,6 @@ public class EngineFacadeImpl implements EngineFacade {
     private final UserStore userStore;
     private final RunManager runManager;
 
-    // Architecture cost multipliers (adjust to your spec)
     private final Map<String,Integer> architectureTariff = Map.of(
             "Basic", 1, "Advanced", 2, "Pro", 3
     );
@@ -28,14 +26,14 @@ public class EngineFacadeImpl implements EngineFacade {
     @Override
     public ProgramInfo loadProgram(String xmlText) {
         ProgramParser parser = new ProgramParser();
-        Program program = parser.parse(xmlText); // throws with friendly msg on invalid xml
+        Program program = parser.parse(xmlText);
         return programStore.register(program);
     }
 
     @Override
     public List<TraceRow> expand(String programId, String function, int degree) {
         Program p = programStore.getProgram(programId);
-        List<Instruction> expanded = p.expand(function, degree); // or whatever helper you expose
+        List<Instruction> expanded = p.expand(function, degree);
         return toTrace(expanded);
     }
 
@@ -49,10 +47,9 @@ public class EngineFacadeImpl implements EngineFacade {
         int tariff = tariffFor(architecture);
 
         Runner runner = new Runner(p, function, degree, inputs);
-        int y = runner.run(); // executes fully
+        int y = runner.run();
         int cycles = runner.getCycles();
 
-        // Credits
         userStore.charge(userId, cycles * tariff);
 
         Map<String,Integer> vars = runner.snapshotVariables();
@@ -75,6 +72,12 @@ public class EngineFacadeImpl implements EngineFacade {
         String runId = runManager.start(userId, dbg, tariff);
 
         return new DebugSession(runId, toState(runId, dbg));
+    }
+
+    @Override
+    public DebugState status(String runId) {
+        Debugger dbg = runManager.get(runId);
+        return toState(runId, dbg);
     }
 
     @Override
@@ -102,16 +105,11 @@ public class EngineFacadeImpl implements EngineFacade {
     }
 
     private void finalizeDebug(String runId, Debugger dbg) {
-        // charge credits
         int tariff = runManager.tariff(runId);
         int cycles = dbg.getCycles();
         String userId = runManager.user(runId);
         userStore.charge(userId, cycles * tariff);
-
-        // write history
-        runManager.recordHistory(userId, dbg.getDegree(), dbg.getInputs(),
-                dbg.getY(), dbg.getCycles());
-
+        runManager.recordHistory(userId, dbg.getDegree(), dbg.getInputs(), dbg.getY(), dbg.getCycles());
         runManager.finish(runId);
     }
 
@@ -124,15 +122,14 @@ public class EngineFacadeImpl implements EngineFacade {
 
     @Override
     public CreditsState chargeCredits(String userId, int amount) {
-        userStore.charge(userId, -amount); // negative charge = top-up
+        userStore.charge(userId, -amount); // negative = top-up
         return getCredits(userId);
     }
 
     @Override
     public List<HistoryRow> history(String userId) {
         return runManager.history(userId).stream()
-                .map(h -> new HistoryRow(h.runNo(), h.degree(), h.inputs(),
-                        h.y(), h.cycles(), h.timestamp()))
+                .map(h -> new HistoryRow(h.runNo(), h.degree(), h.inputs(), h.y(), h.cycles(), h.timestamp()))
                 .collect(Collectors.toList());
     }
 

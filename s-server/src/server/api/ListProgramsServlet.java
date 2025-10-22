@@ -1,42 +1,25 @@
 package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import jakarta.servlet.ServletException;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
-
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import server.core.ProgramInfo;
 import server.core.ProgramStore;
+import server.core.SimpleJson;
 
-@WebServlet(name = "ListProgramsServlet", urlPatterns = {"/api/programs"})
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+
+@WebServlet("/api/programs/meta")
 public class ListProgramsServlet extends HttpServlet {
-
-    private final ProgramStore programs = ProgramStore.get();
-
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
-        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        resp.setContentType("application/json");
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json; charset=UTF-8");
+        ProgramStore store = (ProgramStore) getServletContext().getAttribute("programStore");
 
-        String userId = req.getParameter("userId");
-        if (userId == null || userId.isBlank()) {
-            resp.setStatus(400);
-            resp.getWriter().write("{\"error\":\"userId is required\"}");
-            return;
-        }
-
-        List<Map<String,Object>> arr = new ArrayList<>();
-        for (var e : programs.list(userId)) {
-            Map<String,Object> o = new LinkedHashMap<>();
-            o.put("id", e.getId());
-            o.put("name", e.getName());
-            o.put("uploadedAt", String.valueOf(e.getUploadedAt()));
-            arr.add(o);
-        }
-        resp.getWriter().write(json(arr));
+        List<ProgramInfo> items = store.list(); // your ProgramStore should expose this
+        SimpleJson.write(resp.getWriter(), Map.of("programs", items));
     }
-
-    private static String json(Object o){ return StartRunServlet.Mini.stringify(o); }
 }

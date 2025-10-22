@@ -1,45 +1,41 @@
 package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import server.core.EngineFacade;
+import server.core.EngineFacade.DebugState;
+import server.core.SimpleJson;
+
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-import server.core.RunManager;
-
-@WebServlet(name = "RunResumeServlet", urlPatterns = {"/api/runs/resume"})
+@WebServlet("/api/runs/resume")
 public class RunResumeServlet extends HttpServlet {
-
-    private final RunManager runs = RunManager.get();
-
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
-        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        resp.setContentType("application/json");
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json; charset=UTF-8");
+        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
 
-        Map<String,Object> body = readJsonObject(req);
-        long id = ((Number) body.get("runId")).longValue();
+        String json = req.getReader().lines().collect(Collectors.joining("\n"));
+        Map<String,Object> body = SimpleJson.parse(json);
+        String runId = String.valueOf(body.get("runId"));
 
-        var s = runs.resume(id);
-
-        Map<String,Object> out = new LinkedHashMap<>();
-        out.put("runId", s.id);
-        out.put("state", s.finished ? "DONE" : "PAUSED");
-        out.put("pc", s.pc);
-        out.put("currentInstruction", s.currentInstruction);
-        out.put("cycles", s.cycles);
-        out.put("variables", s.vars);
-        out.put("finished", s.finished);
-        resp.getWriter().write(StartRunServlet.Mini.stringify(out));
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String,Object> readJsonObject(HttpServletRequest req) throws IOException {
-        String s = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        Object o = StartRunServlet.Mini.parse(s);
-        return (o instanceof Map) ? (Map<String,Object>) o : new LinkedHashMap<>();
+        try {
+            DebugState st = facade.resume(runId);
+            SimpleJson.write(resp.getWriter(), Map.of(
+                    "runId", st.runId(),
+                    "pc", st.pc(),
+                    "cycles", st.cycles(),
+                    "halted", st.halted(),
+                    "variables", st.variables(),
+                    "current", StartRunServlet.traceToMap(st.current())
+            ));
+        } catch (Exception ex) {
+            resp.setStatus(400);
+            SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
+        }
     }
 }

@@ -1,57 +1,39 @@
 package server.api;
 
-import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import server.core.EngineFacade;
+import server.core.ProgramInfo;
+import server.core.SimpleJson;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-import server.core.ProgramStore;
-
-@WebServlet(name = "UploadProgramServlet", urlPatterns = {"/api/programs:upload"})
-@MultipartConfig
+@WebServlet("/api/programs:upload")
 public class UploadProgramServlet extends HttpServlet {
-
-    private final ProgramStore programs = ProgramStore.get();
-
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
-        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        resp.setContentType("application/json");
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json; charset=UTF-8");
+        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
 
-        String userId = req.getParameter("userId");
-        if (userId == null || userId.isBlank()) {
-            resp.setStatus(400);
-            resp.getWriter().write("{\"error\":\"userId is required\"}");
-            return;
-        }
-        Part xmlPart = req.getPart("file");
-        if (xmlPart == null) {
-            resp.setStatus(400);
-            resp.getWriter().write("{\"error\":\"file part 'file' is required\"}");
-            return;
-        }
-        String fileName = Optional.ofNullable(xmlPart.getSubmittedFileName()).orElse("program.xml");
-        String baseName = fileName.replaceAll("\\.xml$","");
+        String json = req.getReader().lines().collect(Collectors.joining("\n"));
+        Map<String,Object> body = SimpleJson.parse(json);
+        String xml = String.valueOf(body.get("xml"));
 
-        try (InputStream is = xmlPart.getInputStream()) {
-            String xml = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            var entry = programs.add(userId, baseName, xml);
-
-            Map<String,Object> out = new LinkedHashMap<>();
-            out.put("id", entry.getId());
-            out.put("name", entry.getName());
-            resp.getWriter().write(json(out));
+        try {
+            ProgramInfo info = facade.loadProgram(xml);
+            SimpleJson.write(resp.getWriter(), Map.of(
+                    "id", info.id(),
+                    "name", info.name(),
+                    "functions", info.functions(),
+                    "maxDegree", info.maxDegree()
+            ));
         } catch (Exception ex) {
             resp.setStatus(400);
-            resp.getWriter().write("{\"error\":\"" + ex.getMessage().replace("\"","'") + "\"}");
+            SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
         }
     }
-
-    private static String json(Object o){ return StartRunServlet.Mini.stringify(o); }
 }
