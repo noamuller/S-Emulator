@@ -1,46 +1,43 @@
 package server.core;
 
-import java.time.Instant;
+import sengine.Program;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProgramStore {
 
-    public static final class ProgramEntry {
-        private final String id;
-        private final String name;
-        private final String xml;        // phase 1: keep raw XML; phase 2: keep parsed Program
-        private final Instant uploadedAt;
+    private final Map<String, Program> programs = new ConcurrentHashMap<>();
+    private final Map<String, ProgramInfo> infos = new ConcurrentHashMap<>();
+    private final AtomicInteger counter = new AtomicInteger(1);
 
-        ProgramEntry(String id, String name, String xml, Instant uploadedAt) {
-            this.id = id; this.name = name; this.xml = xml; this.uploadedAt = uploadedAt;
-        }
-        public String getId() { return id; }
-        public String getName() { return name; }
-        public String getXml() { return xml; }
-        public Instant getUploadedAt() { return uploadedAt; }
+    public synchronized ProgramInfo register(Program program) {
+        String id = "prog_" + counter.getAndIncrement();
+        programs.put(id, program);
+
+        // simple, engine-agnostic metadata for now
+        List<String> functions = List.of("main");
+        int maxDegree = 0;
+
+        ProgramInfo info = new ProgramInfo(id, id, functions, maxDegree);
+        infos.put(id, info);
+        return info;
     }
 
-    private static final ProgramStore INSTANCE = new ProgramStore();
-    public static ProgramStore get() { return INSTANCE; }
-
-    // userId -> list of programs
-    private final Map<String, List<ProgramEntry>> byUser = new ConcurrentHashMap<>();
-
-    private ProgramStore() {}
-
-    public synchronized ProgramEntry add(String userId, String name, String xml) {
-        if (userId == null || userId.isBlank()) throw new IllegalArgumentException("userId required");
-        if (xml == null || xml.isBlank()) throw new IllegalArgumentException("file is empty");
-
-        String id = UUID.randomUUID().toString();
-        ProgramEntry e = new ProgramEntry(id, (name == null || name.isBlank() ? "program-" + id.substring(0, 6) : name),
-                xml, Instant.now());
-        byUser.computeIfAbsent(userId, k -> new ArrayList<>()).add(e);
-        return e;
+    public Program getProgram(String id) {
+        Program p = programs.get(id);
+        if (p == null) throw new IllegalArgumentException("Unknown program: " + id);
+        return p;
     }
 
-    public List<ProgramEntry> list(String userId) {
-        return byUser.getOrDefault(userId, Collections.emptyList());
+    public List<ProgramInfo> list() {
+        return new ArrayList<>(infos.values());
+    }
+
+    public ProgramInfo info(String id) {
+        ProgramInfo i = infos.get(id);
+        if (i == null) throw new IllegalArgumentException("Unknown program: " + id);
+        return i;
     }
 }

@@ -1,9 +1,9 @@
 package server.api;
 
-import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletContextEvent;
 import jakarta.servlet.ServletContextListener;
 import jakarta.servlet.annotation.WebListener;
+
 import server.core.EngineFacade;
 import server.core.EngineFacadeImpl;
 import server.core.ProgramStore;
@@ -12,19 +12,23 @@ import server.core.UserStore;
 
 @WebListener
 public class Bootstrap implements ServletContextListener {
+
     @Override
     public void contextInitialized(ServletContextEvent sce) {
-        ServletContext ctx = sce.getServletContext();
-
-        ProgramStore programStore = new ProgramStore();
-        UserStore userStore = new UserStore();
-        RunManager runManager = new RunManager();
+        // Build shared core instances and wire the facade
+        ProgramStore programStore = new ProgramStore();   // NOTE: ctor, not ProgramStore.get()
+        UserStore userStore       = UserStore.get();      // singleton already provided
+        RunManager runManager     = new RunManager();
 
         EngineFacade facade = new EngineFacadeImpl(programStore, userStore, runManager);
 
-        ctx.setAttribute("programStore", programStore);
-        ctx.setAttribute("userStore", userStore);
-        ctx.setAttribute("runManager", runManager);
-        ctx.setAttribute("engineFacade", facade);
+        // Expose to all servlets
+        sce.getServletContext().setAttribute("facade", facade);
+        System.out.println("[Bootstrap] EngineFacade registered under key 'facade'");
+    }
+
+    @Override
+    public void contextDestroyed(ServletContextEvent sce) {
+        // nothing to clean up
     }
 }

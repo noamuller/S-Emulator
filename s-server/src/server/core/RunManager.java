@@ -1,171 +1,107 @@
 package server.core;
 
 import sengine.Debugger;
-import sengine.Program;
-import sengine.ProgramParser;
-import sengine.Runner;
 
-import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.io.File;
-import java.nio.file.Files;
 
-/**
- * Run/session manager tailored to this project.
- * Singleton access via get().
- */
+/** Manages live debug sessions and per-user run history. */
 public class RunManager {
 
-    /* ---------- Singleton ---------- */
-    private static final RunManager INSTANCE = new RunManager();
-    public static RunManager get() { return INSTANCE; }
-    private RunManager() {}
+    /* ---------- session model ---------- */
+    private static final class Session {
+        final long id;
+        final String userId;
+        final Debugger dbg;
+        final int degree;
+        final List<Integer> inputs;
+        final int tariff;
 
-    public enum Mode { REGULAR, DEBUG }
-
-    public static final class RunSession {
-        public final long id;
-        public final String userId;
-        public final String programId;
-        public final int degree;
-        public final List<Integer> inputs;
-        public final Mode mode;
-
-        public volatile boolean finished = false;
-        public volatile int cycles = 0;
-        public volatile int pc = -1;
-        public volatile LinkedHashMap<String,Integer> vars = new LinkedHashMap<>();
-        public volatile String currentInstruction = null;
-
-        /* debug engine */
-        volatile Debugger debugger;
-
-        RunSession(long id, String userId, String programId,
-                   int degree, List<Integer> inputs, Mode mode) {
-            this.id = id;
-            this.userId = userId;
-            this.programId = programId;
-            this.degree = degree;
-            this.inputs = inputs;
-            this.mode = mode;
+        Session(long id, String userId, Debugger dbg, int degree, List<Integer> inputs, int tariff) {
+            this.id = id; this.userId = userId; this.dbg = dbg;
+            this.degree = degree; this.inputs = inputs; this.tariff = tariff;
         }
     }
 
-    private final AtomicLong seq = new AtomicLong(1);
-    private final Map<Long, RunSession> sessions = new ConcurrentHashMap<>();
-
-    private final UserStore users = UserStore.get();
-    private final ProgramStore programs = ProgramStore.get();
-
-    public RunSession start(String userId, String programId, int degree, List<Integer> inputs, Mode mode) {
-        if (users.getById(userId) == null) throw new IllegalArgumentException("Unknown user: " + userId);
-        ProgramStore.ProgramEntry entry = findProgram(userId, programId);
-        if (entry == null) throw new IllegalArgumentException("Unknown program for this user: " + programId);
-
-        Program program = parse(entry.getXml());
-
-        long id = seq.getAndIncrement();
-        RunSession s = new RunSession(id, userId, programId, degree, inputs, mode);
-
-        if (mode == Mode.REGULAR) {
-            Runner.RunResult rr = Runner.run(program, degree, inputs);
-            s.finished = true;
-            s.cycles = rr.cycles;
-            s.vars = rr.variables;
-            s.pc = -1;
-            s.currentInstruction = null;
-        } else {
-            Debugger d = new Debugger(program, degree, inputs);
-            s.debugger = d;
-            var snap = d.snapshot();
-            s.pc = snap.pc;
-            s.cycles = snap.cycles;
-            s.finished = snap.halted;
-            s.vars = snap.vars;
-            s.currentInstruction = instructionAt(d, snap.pc);
+    public static final class HistoryItem {
+        private final int runNo, degree, y, cycles;
+        private final String inputs;
+        private final long timestamp;
+        public HistoryItem(int runNo, int degree, String inputs, int y, int cycles) {
+            this.runNo = runNo; this.degree = degree; this.inputs = inputs;
+            this.y = y; this.cycles = cycles; this.timestamp = Instant.now().toEpochMilli();
         }
-
-        sessions.put(s.id, s);
-        return s;
+        public int runNo(){ return runNo; }
+        public int degree(){ return degree; }
+        public String inputs(){ return inputs; }
+        public int y(){ return y; }
+        public int cycles(){ return cycles; }
+        public long timestamp(){ return timestamp; }
     }
 
-    public RunSession get(long id) {
-        RunSession s = sessions.get(id);
-        if (s == null) throw new IllegalArgumentException("Unknown runId: " + id);
-        return s;
+    private final AtomicLong idGen = new AtomicLong(1);
+    private final Map<Long, Session> sessions = new ConcurrentHashMap<>();
+    private final Map<String, List<HistoryItem>> histories = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> runCounters = new ConcurrentHashMap<>();
+
+    /* ---------- sessions ---------- */
+
+    public long start(String userId, Debugger dbg, int degree, List<Integer> inputs, int tariff) {
+        long id = idGen.getAndIncrement();
+        sessions.put(id, new Session(id, userId, dbg, degree,
+                inputs == null ? List.of() : List.copyOf(inputs), tariff));
+        return id;
     }
 
-    public RunSession step(long id) {
-        RunSession s = get(id);
-        if (s.debugger == null) throw new IllegalStateException("Not a debug run");
-
-        var snap = s.debugger.step();
-        s.pc = snap.pc;
-        s.cycles = snap.cycles;
-        s.finished = snap.halted;
-        s.vars = snap.vars;
-        s.currentInstruction = instructionAt(s.debugger, snap.pc);
-        return s;
+    public Debugger get(long runId) {
+        Session s = sessions.get(runId);
+        if (s == null) throw new IllegalArgumentException("Unknown runId " + runId);
+        return s.dbg;
     }
 
-    public RunSession resume(long id) {
-        RunSession s = get(id);
-        if (s.debugger == null) throw new IllegalStateException("Not a debug run");
-
-        int guard = 100000; // safety
-        Debugger dbg = s.debugger;
-        while (guard-- > 0) {
-            var snap = dbg.step();
-            s.pc = snap.pc;
-            s.cycles = snap.cycles;
-            s.vars = snap.vars;
-            s.finished = snap.halted;
-            s.currentInstruction = instructionAt(dbg, snap.pc);
-            if (snap.halted) break;
-        }
-        return s;
+    public String user(long runId) {
+        Session s = sessions.get(runId);
+        if (s == null) throw new IllegalArgumentException("Unknown runId " + runId);
+        return s.userId;
     }
 
-    public RunSession stop(long id) {
-        RunSession s = get(id);
-        s.finished = true;
-        return s;
+    public int degree(long runId) {
+        Session s = sessions.get(runId);
+        if (s == null) throw new IllegalArgumentException("Unknown runId " + runId);
+        return s.degree;
     }
 
-    /* ---------- helpers ---------- */
-
-    private ProgramStore.ProgramEntry findProgram(String userId, String programId) {
-        for (ProgramStore.ProgramEntry e : programs.list(userId)) {
-            if (Objects.equals(e.getId(), programId)) return e;
-        }
-        return null;
+    public List<Integer> inputs(long runId) {
+        Session s = sessions.get(runId);
+        if (s == null) throw new IllegalArgumentException("Unknown runId " + runId);
+        return s.inputs;
     }
 
-    /** ProgramParser expects a File: write XML to temp file and call parseFromXml(File). */
-    private static Program parse(String xml) {
-        try {
-            File tmp = File.createTempFile("program-", ".xml");
-            Files.writeString(tmp.toPath(), xml == null ? "" : xml, StandardCharsets.UTF_8);
-            try {
-                // FIX: use ProgramParser.parseFromXml(File)
-                return ProgramParser.parseFromXml(tmp);
-            } finally {
-                try { Files.deleteIfExists(tmp.toPath()); } catch (Exception ignore) {}
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to parse program XML: " + e.getMessage(), e);
-        }
+    public int tariff(long runId) {
+        Session s = sessions.get(runId);
+        if (s == null) throw new IllegalArgumentException("Unknown runId " + runId);
+        return s.tariff;
     }
 
-    private static String instructionAt(Debugger d, int pc) {
-        if (pc < 0) return null;
-        var list = d.rendered().list;
-        if (pc >= 0 && pc < list.size()) {
-            var inst = list.get(pc);
-            return inst.text == null ? "" : inst.text;
-        }
-        return null;
+    public void finish(long runId) {
+        sessions.remove(runId);
+    }
+
+    /* ---------- history ---------- */
+
+    public void recordHistory(String userId, int degree, List<Integer> inputs, int y, int cycles) {
+        String inputsStr = (inputs == null || inputs.isEmpty())
+                ? ""
+                : String.join(", ", inputs.stream().map(String::valueOf).toList());
+        int runNo = runCounters.computeIfAbsent(userId, k -> new AtomicInteger(0)).incrementAndGet();
+        histories.computeIfAbsent(userId, k -> new ArrayList<>())
+                .add(new HistoryItem(runNo, degree, inputsStr, y, cycles));
+    }
+
+    public List<HistoryItem> history(String userId) {
+        return histories.getOrDefault(userId, List.of());
     }
 }

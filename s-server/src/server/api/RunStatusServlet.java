@@ -5,7 +5,6 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
-import server.core.EngineFacade.DebugState;
 import server.core.SimpleJson;
 
 import java.io.IOException;
@@ -14,24 +13,25 @@ import java.util.stream.Collectors;
 
 @WebServlet("/api/runs/status")
 public class RunStatusServlet extends HttpServlet {
+
+    private EngineFacade facade() {
+        return (EngineFacade) getServletContext().getAttribute("facade");
+    }
+
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
-        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
-
-        String json = req.getReader().lines().collect(Collectors.joining("\n"));
-        Map<String,Object> body = SimpleJson.parse(json);
+        String json = req.getReader().lines().collect(Collectors.joining());
+        Map<String, Object> body = SimpleJson.parse(json);
         String runId = String.valueOf(body.get("runId"));
-
         try {
-            DebugState st = facade.status(runId);
+            var st = facade().status(runId);
             SimpleJson.write(resp.getWriter(), Map.of(
                     "runId", st.runId(),
                     "pc", st.pc(),
                     "cycles", st.cycles(),
-                    "halted", st.halted(),
+                    "finished", st.halted(),
                     "variables", st.variables(),
-                    "current", StartRunServlet.traceToMap(st.current())
+                    "currentInstruction", st.current() == null ? "" : st.current().instr()
             ));
         } catch (Exception ex) {
             resp.setStatus(400);

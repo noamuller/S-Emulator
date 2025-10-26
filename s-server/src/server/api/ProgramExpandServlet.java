@@ -5,38 +5,48 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
-import server.core.EngineFacade.TraceRow;
 import server.core.SimpleJson;
 
 import java.io.IOException;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
-@WebServlet("/api/programs/expand")
+@WebServlet("/api/program:expand")
 public class ProgramExpandServlet extends HttpServlet {
+
+    private EngineFacade facade() {
+        return (EngineFacade) getServletContext().getAttribute("facade");
+    }
+
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
-        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
-
-        String json = req.getReader().lines().collect(Collectors.joining("\n"));
+        String json = req.getReader().lines().collect(Collectors.joining());
         Map<String,Object> body = SimpleJson.parse(json);
+
         String programId = String.valueOf(body.get("programId"));
         String function  = String.valueOf(body.getOrDefault("function", "main"));
-        int degree = toInt(body.get("degree"), 0);
+        int degree       = asInt(body.get("degree"), 0);
 
         try {
-            List<TraceRow> rows = facade.expand(programId, function, degree);
-            SimpleJson.write(resp.getWriter(), rows.stream().map(StartRunServlet::traceToMap).toList());
+            // facade.expand() returns List<TraceRow>
+            var rows = facade().expand(programId, function, degree);
+            List<String> lines = new ArrayList<>(rows.size());
+            int sum = 0;
+            for (var r : rows) {
+                // TraceRow(int index, String type, String label, String instr, int cycles)
+                String lbl = (r.label() == null || r.label().isBlank()) ? "" : (r.label() + ": ");
+                lines.add((lbl + r.instr()).trim());
+                sum += Math.max(0, r.cycles());
+            }
+            Map<String,Object> out = new LinkedHashMap<>();
+            out.put("lines", lines);
+            out.put("sumCycles", sum);
+            SimpleJson.write(resp.getWriter(), out);
         } catch (Exception ex) {
             resp.setStatus(400);
             SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
         }
     }
 
-    private static int toInt(Object o, int d) {
-        if (o instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(String.valueOf(o)); } catch (Exception e) { return d; }
-    }
+    private static int asInt(Object v, int d){ try { return Integer.parseInt(String.valueOf(v)); } catch(Exception e){ return d; } }
 }

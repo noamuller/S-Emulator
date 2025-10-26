@@ -1,12 +1,5 @@
 package server.core;
 
-public class ProgramInfo {
-    private final String id;
-    private final String name;
+import java.util.List;
 
-    public ProgramInfo(String id, String name) {
-        this.id = id; this.name = name;
-    }
-    public String getId() { return id; }
-    public String getName() { return name; }
-}
+public record ProgramInfo(String id, String name, List<String> functions, int maxDegree) {}

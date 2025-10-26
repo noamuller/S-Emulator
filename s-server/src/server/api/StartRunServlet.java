@@ -5,59 +5,57 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
-import server.core.EngineFacade.DebugSession;
-import server.core.EngineFacade.RunResult;
-import server.core.EngineFacade.TraceRow;
 import server.core.SimpleJson;
 
 import java.io.IOException;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @WebServlet("/api/runs")
 public class StartRunServlet extends HttpServlet {
 
+    private EngineFacade facade() {
+        Object f = getServletContext().getAttribute("facade");
+        return (EngineFacade) f;  // Bootstrap must have put it here
+    }
+
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
-        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
-
-        String json = req.getReader().lines().collect(Collectors.joining("\n"));
+        String json = req.getReader().lines().collect(Collectors.joining());
         Map<String, Object> body = SimpleJson.parse(json);
 
-        String userId = asString(body.get("userId"));
-        String programId = asString(body.get("programId"));
-        String function = asString(body.get("function"));
-        String architecture = asStringOrDefault(body.get("architecture"), "Basic");
-        int degree = asInt(body.get("degree"), 0);
+        String userId    = String.valueOf(body.getOrDefault("userId", ""));
+        String programId = String.valueOf(body.getOrDefault("programId", ""));
+        String function  = String.valueOf(body.getOrDefault("function", "main"));
+        int degree       = asInt(body.get("degree"), 0);
+        String arch      = String.valueOf(body.getOrDefault("architecture", "Basic"));
+        boolean debug    = Boolean.TRUE.equals(body.get("debug"));
 
         @SuppressWarnings("unchecked")
-        List<Integer> inputs = (List<Integer>) body.getOrDefault("inputs", List.of());
-        boolean debug = Boolean.TRUE.equals(body.get("debug"));
+        List<Object> raw = (List<Object>) body.getOrDefault("inputs", List.of());
+        List<Integer> inputs = new ArrayList<>();
+        for (Object o : raw) inputs.add(asInt(o, 0));
 
         try {
             if (debug) {
-                DebugSession s = facade.startDebug(userId, programId, function, inputs, degree, architecture);
-                SimpleJson.write(resp.getWriter(), Map.of(
-                        "runId", s.runId(),
-                        "state", Map.of(
-                                "runId", s.state().runId(),
-                                "pc", s.state().pc(),
-                                "cycles", s.state().cycles(),
-                                "halted", s.state().halted(),
-                                "variables", s.state().variables(),
-                                "current", traceToMap(s.state().current())
-                        )
-                ));
+                var s = facade().startDebug(userId, programId, function, inputs, degree, arch);
+                var st = s.state();
+                Map<String,Object> out = new LinkedHashMap<>();
+                out.put("runId", s.runId());
+                out.put("pc", st.pc());
+                out.put("cycles", st.cycles());
+                out.put("finished", st.halted());
+                out.put("variables", st.variables());
+                out.put("currentInstruction", st.current() == null ? "" : st.current().instr());
+                SimpleJson.write(resp.getWriter(), out);
             } else {
-                RunResult rr = facade.run(userId, programId, function, inputs, degree, architecture);
-                SimpleJson.write(resp.getWriter(), Map.of(
-                        "y", rr.y(),
-                        "cycles", rr.cycles(),
-                        "variables", rr.variables(),
-                        "trace", rr.trace().stream().map(StartRunServlet::traceToMap).toList()
-                ));
+                var r = facade().run(userId, programId, function, inputs, degree, arch);
+                Map<String,Object> out = new LinkedHashMap<>();
+                out.put("runId", r.runId());         // UI expects this
+                out.put("y", r.y());
+                out.put("cycles", r.cycles());
+                out.put("variables", r.variables());
+                SimpleJson.write(resp.getWriter(), out);
             }
         } catch (Exception ex) {
             resp.setStatus(400);
@@ -65,21 +63,5 @@ public class StartRunServlet extends HttpServlet {
         }
     }
 
-    private static String asString(Object o) { return o == null ? null : String.valueOf(o); }
-    private static String asStringOrDefault(Object o, String d) { return o == null ? d : String.valueOf(o); }
-    private static int asInt(Object o, int d) {
-        if (o instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(String.valueOf(o)); } catch (Exception e) { return d; }
-    }
-
-    private static Map<String, Object> traceToMap(TraceRow r) {
-        if (r == null) return null;
-        return Map.of(
-                "index", r.index(),
-                "type", r.type(),
-                "label", r.label(),
-                "instr", r.instr(),
-                "cycles", r.cycles()
-        );
-    }
+    private static int asInt(Object v, int def){ try { return Integer.parseInt(String.valueOf(v)); } catch(Exception e){ return def; } }
 }

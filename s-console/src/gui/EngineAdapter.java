@@ -40,18 +40,31 @@ public class EngineAdapter {
         return postJson("/programs:upload", body);
     }
 
+    /** Optional: may 404 if server doesn’t provide it; caller should catch. */
+    public Map<String, Object> programMeta(String programId) throws IOException {
+        return postJson("/program:meta", Map.of("programId", programId));
+    }
+
+    /** Expand program to degree. Returns map with keys: lines(List<String>), sumCycles(int). */
+    public Map<String, Object> expand(String programId, String function, int degree) throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("programId", programId);
+        body.put("function", function);
+        body.put("degree", degree);
+        return postJson("/program:expand", body);
+    }
+
     @SuppressWarnings("unchecked")
     public Map<String, Object> startRun(String userId, String programId, int degree,
                                         List<Integer> inputs, boolean debug) throws IOException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("userId", userId);
         body.put("programId", programId);
-        body.put("function", "main");       // adjust if you later expose functionCombo to server
+        body.put("function", "main");
         body.put("degree", degree);
         body.put("inputs", inputs == null ? List.of() : inputs);
-        body.put("architecture", "Basic");  // TODO UI dropdown later
+        body.put("architecture", "Basic");
         body.put("debug", debug);
-
         return postJson("/runs", body);
     }
 
@@ -98,7 +111,6 @@ public class EngineAdapter {
             //noinspection unchecked
             return (Map<String, Object>) m;
         }
-        // Wrap non-map replies
         return Map.of("value", parsed);
     }
 
@@ -111,7 +123,7 @@ public class EngineAdapter {
         }
     }
 
-    /* -------------------- Minimal JSON (Maps/Lists/Strings/Numbers/Bools/null) -------------------- */
+    /* -------------------- Minimal JSON -------------------- */
 
     static final class MiniJson {
         static String stringify(Object o) {
@@ -121,10 +133,9 @@ public class EngineAdapter {
         }
 
         static Object parse(String s) {
-            return new Parser(s).parseValue();
+            return new Parser(s == null ? "" : s).parseValue();
         }
 
-        // --- Writer ---
         private static void writeVal(StringBuilder sb, Object v) {
             if (v == null) { sb.append("null"); return; }
             if (v instanceof String str) { writeStr(sb, str); return; }
@@ -153,7 +164,6 @@ public class EngineAdapter {
                 sb.append(']');
                 return;
             }
-            // Fallback
             writeStr(sb, String.valueOf(v));
         }
 
@@ -170,7 +180,7 @@ public class EngineAdapter {
                     case '\r' -> sb.append("\\r");
                     case '\t' -> sb.append("\\t");
                     default -> {
-                        if (c < 0x20) sb.append(String.format("\\u%04x", (int)c));
+                        if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
                         else sb.append(c);
                     }
                 }
@@ -178,7 +188,6 @@ public class EngineAdapter {
             sb.append('"');
         }
 
-        // --- Reader (very small recursive descent) ---
         private static final class Parser {
             final String s; int i=0, n;
             Parser(String s){ this.s=s; this.n=s.length(); }
@@ -192,11 +201,11 @@ public class EngineAdapter {
                 if (c=='"') return parseStr();
                 if (c=='t' || c=='f') return parseBool();
                 if (c=='n') return parseNull();
-                return parseNum();
+                return parseNumOrToken();
             }
 
             Map<String,Object> parseObj() {
-                i++; // {
+                i++;
                 Map<String,Object> m = new LinkedHashMap<>();
                 skipWs();
                 if (peek('}')) { i++; return m; }
@@ -214,7 +223,7 @@ public class EngineAdapter {
             }
 
             List<Object> parseArr() {
-                i++; // [
+                i++;
                 List<Object> list = new ArrayList<>();
                 skipWs();
                 if (peek(']')) { i++; return list; }
@@ -245,10 +254,11 @@ public class EngineAdapter {
                             case 'n': sb.append('\n'); break;
                             case 'r': sb.append('\r'); break;
                             case 't': sb.append('\t'); break;
-                            case 'u':
+                            case 'u': {
                                 int code = Integer.parseInt(s.substring(i, i+4), 16);
                                 sb.append((char) code);
                                 i += 4; break;
+                            }
                             default: sb.append(e);
                         }
                     } else sb.append(c);
@@ -267,21 +277,20 @@ public class EngineAdapter {
                 throw new RuntimeException("Invalid null at " + i);
             }
 
-            Number parseNum() {
+            Object parseNumOrToken() {
                 int j=i;
                 while (i<n) {
                     char c = s.charAt(i);
                     if ((c>='0' && c<='9') || c=='+' || c=='-' || c=='.' || c=='e' || c=='E') { i++; continue; }
                     break;
                 }
-                String token = s.substring(j,i);
+                String token = s.substring(j,i).trim();
                 try {
                     if (token.contains(".") || token.contains("e") || token.contains("E")) return Double.parseDouble(token);
                     long L = Long.parseLong(token);
                     if (L >= Integer.MIN_VALUE && L <= Integer.MAX_VALUE) return (int)L;
                     return L;
                 } catch (NumberFormatException e) {
-                    // fall back to string
                     return token;
                 }
             }
