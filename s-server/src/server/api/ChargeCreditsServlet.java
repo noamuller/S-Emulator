@@ -1,37 +1,34 @@
 package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.HttpServlet;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import server.core.EngineFacade;
-import server.core.SimpleJson;
-
+import jakarta.servlet.http.*;
 import java.io.IOException;
 import java.util.Map;
 import java.util.stream.Collectors;
+import server.core.EngineFacade;
+import server.core.SimpleJson;
 
-@WebServlet("/api/credits/charge")
+@WebServlet("/api/charge-credits")
 public class ChargeCreditsServlet extends HttpServlet {
-    @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        resp.setContentType("application/json; charset=UTF-8");
-        EngineFacade facade = (EngineFacade) getServletContext().getAttribute("engineFacade");
 
-        String json = req.getReader().lines().collect(Collectors.joining("\n"));
-        Map<String,Object> body = SimpleJson.parse(json);
-        String userId = String.valueOf(body.get("userId"));
-        int amount = toInt(body.get("amount"), 0);
-
-        var state = facade.chargeCredits(userId, amount);
-        SimpleJson.write(resp.getWriter(), Map.of(
-                "userId", state.userId(),
-                "credits", state.credits()
-        ));
+    private EngineFacade facade() {
+        Object f = getServletContext().getAttribute("facade");
+        if (f instanceof EngineFacade ef) return ef;
+        throw new IllegalStateException("EngineFacade not initialized; check Bootstrap");
     }
 
-    private static int toInt(Object o, int d) {
-        if (o instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(String.valueOf(o)); } catch (Exception e) { return d; }
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        var body = SimpleJson.parse(req.getReader().lines().collect(Collectors.joining()));
+        String userId = String.valueOf(body.get("userId"));
+        int amount = ((Number) body.getOrDefault("amount", 0)).intValue();
+
+        try {
+            var cs = facade().chargeCredits(userId, amount);
+            SimpleJson.write(resp.getWriter(), Map.of("userId", cs.userId(), "credits", cs.credits()));
+        } catch (Exception ex) {
+            resp.setStatus(400);
+            SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
+        }
     }
 }

@@ -15,20 +15,19 @@ public class Bootstrap implements ServletContextListener {
 
     @Override
     public void contextInitialized(ServletContextEvent sce) {
-        // Build shared core instances and wire the facade
-        ProgramStore programStore = new ProgramStore();   // NOTE: ctor, not ProgramStore.get()
-        UserStore userStore       = UserStore.get();      // singleton already provided
-        RunManager runManager     = new RunManager();
+        // Use the singleton ProgramStore so everyone (including ListProgramsServlet) sees the same data
+        ProgramStore programStore = ProgramStore.get();
+        UserStore    userStore    = UserStore.get();
+        RunManager   runManager   = new RunManager();
 
         EngineFacade facade = new EngineFacadeImpl(programStore, userStore, runManager);
 
-        // Expose to all servlets
         sce.getServletContext().setAttribute("facade", facade);
         System.out.println("[Bootstrap] EngineFacade registered under key 'facade'");
     }
 
     @Override
     public void contextDestroyed(ServletContextEvent sce) {
-        // nothing to clean up
+        // nothing to clean
     }
 }

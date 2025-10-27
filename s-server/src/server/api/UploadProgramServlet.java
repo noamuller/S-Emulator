@@ -1,40 +1,41 @@
 package server.api;
 
+import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.stream.Collectors;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
+import server.core.ProgramInfo;
 import server.core.SimpleJson;
 
-@WebServlet("/api/programs:upload")
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@WebServlet(urlPatterns = "/api/programs/upload")
 public class UploadProgramServlet extends HttpServlet {
 
     private EngineFacade facade() {
-        Object f = getServletContext().getAttribute("facade");
-        if (f instanceof EngineFacade ef) return ef;
-        throw new IllegalStateException("EngineFacade not initialized; check Bootstrap");
+        return (EngineFacade) getServletContext().getAttribute("facade");
     }
 
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        String bodyText = new BufferedReader(new InputStreamReader(req.getInputStream(), StandardCharsets.UTF_8))
-                .lines().collect(Collectors.joining());
-        Map<String,Object> body = SimpleJson.parse(bodyText);
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
 
-        String xml = String.valueOf(body.get("xml"));
-        try {
-            var info = facade().loadProgram(xml); // returns ProgramInfo
-            SimpleJson.write(resp.getWriter(), Map.of(
-                    "programId", info.id(),
-                    "name", info.name(),
-                    "maxDegree", info.maxDegree()
-            ));
-        } catch (Exception ex) {
-            resp.setStatus(400);
-            SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
-        }
+        String body = req.getReader().lines().reduce("", (a, b) -> a + b + "\n");
+
+        ProgramInfo info = facade().loadProgram(body);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", info.id());
+        out.put("programId", info.id());
+        out.put("name", info.name());
+        out.put("functions", info.functions());
+        out.put("maxDegree", info.maxDegree());
+
+        resp.setContentType("application/json; charset=UTF-8");
+        SimpleJson.write(resp.getWriter(), out);
     }
 }

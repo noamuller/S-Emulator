@@ -2,42 +2,54 @@ package server.core;
 
 import sengine.Program;
 
-import java.util.*;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
-public class ProgramStore {
+/** In-memory store for uploaded programs. */
+public final class ProgramStore {
 
-    private final Map<String, Program> programs = new ConcurrentHashMap<>();
-    private final Map<String, ProgramInfo> infos = new ConcurrentHashMap<>();
-    private final AtomicInteger counter = new AtomicInteger(1);
+    private static final ProgramStore INSTANCE = new ProgramStore();
+    public static ProgramStore get() { return INSTANCE; }
 
-    public synchronized ProgramInfo register(Program program) {
-        String id = "prog_" + counter.getAndIncrement();
-        programs.put(id, program);
+    private final Map<String, Program> byId = new ConcurrentHashMap<>();
+    private final Map<String, String> idByName = new ConcurrentHashMap<>();
 
-        // simple, engine-agnostic metadata for now
-        List<String> functions = List.of("main");
-        int maxDegree = 0;
+    // ✅ make constructor public for Bootstrap
+    public ProgramStore() {}
 
-        ProgramInfo info = new ProgramInfo(id, id, functions, maxDegree);
-        infos.put(id, info);
-        return info;
+    /** Adds the program, returns its generated id. */
+    public String put(Program p) {
+        String id = UUID.randomUUID().toString();
+        byId.put(id, p);
+        if (p != null && p.name != null) {
+            idByName.put(p.name, id);
+        }
+        return id;
     }
 
-    public Program getProgram(String id) {
-        Program p = programs.get(id);
-        if (p == null) throw new IllegalArgumentException("Unknown program: " + id);
-        return p;
+    /** Lookup by id (what the GUI keeps). */
+    public Program get(String id) { return byId.get(id); }
+
+    /** Optional convenience. */
+    public Program getByName(String name) {
+        String id = idByName.get(name);
+        return id == null ? null : byId.get(id);
     }
 
-    public List<ProgramInfo> list() {
-        return new ArrayList<>(infos.values());
-    }
+    /** ✅ Add this for ListProgramsServlet */
+    public java.util.List<ProgramInfo> list() {
+        java.util.List<ProgramInfo> out = new java.util.ArrayList<>();
+        for (var e : byId.entrySet()) {
+            Program p = e.getValue();
+            out.add(new ProgramInfo(
+                    e.getKey(),
+                    p.name == null ? "(unnamed)" : p.name,
+                    new java.util.ArrayList<>(p.functions.keySet()),  // functions first
+                    p.maxDegree()                                      // then maxDegree
+            ));
 
-    public ProgramInfo info(String id) {
-        ProgramInfo i = infos.get(id);
-        if (i == null) throw new IllegalArgumentException("Unknown program: " + id);
-        return i;
+        }
+        return out;
     }
 }

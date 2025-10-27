@@ -1,196 +1,193 @@
 package server.core;
 
-import sengine.*;
+import sengine.Debugger;
+import sengine.Instruction;
+import sengine.Program;
+import sengine.ProgramParser;
+import sengine.Runner;
 
 import java.io.File;
-import java.io.FileWriter;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
-import java.util.stream.Collectors;
 
-public class EngineFacadeImpl implements EngineFacade {
+public final class EngineFacadeImpl implements EngineFacade {
 
-    private final ProgramStore programStore;
-    private final UserStore userStore;
-    private final RunManager runManager;
+    private final ProgramStore programs;
+    private final UserStore users;
+    private final RunManager runs;
 
-    // “architecture” -> cost multiplier per cycle
-    private final Map<String,Integer> architectureTariff = Map.of(
-            "Basic", 1, "Advanced", 2, "Pro", 3
-    );
-
-    public EngineFacadeImpl(ProgramStore ps, UserStore us, RunManager rm) {
-        this.programStore = ps;
-        this.userStore = us;
-        this.runManager = rm;
+    public EngineFacadeImpl(ProgramStore programs, UserStore users, RunManager runs) {
+        this.programs = programs;
+        this.users = users;
+        this.runs = runs;
     }
-
-    /* ================= Programs ================= */
 
     @Override
     public ProgramInfo loadProgram(String xmlText) {
-        try {
-            // ProgramParser parses from a File → write a temp file
-            File tmp = File.createTempFile("program-", ".xml");
-            try (FileWriter fw = new FileWriter(tmp, StandardCharsets.UTF_8)) {
-                fw.write(xmlText == null ? "" : xmlText);
-            }
-            Program p = ProgramParser.parseFromXml(tmp);
-            return programStore.register(p);
-        } catch (Exception ex) {
-            throw new IllegalArgumentException("Parse failed: " + ex.getMessage(), ex);
-        }
+        Program p = ProgramParser.parseFromXml(writeTempXml(xmlText));
+        String id = programs.put(p);
+
+        List<String> functions = new ArrayList<>(p.functions.keySet());
+        String name = (p.name == null || p.name.isBlank()) ? "(unnamed)" : p.name;
+
+        return new ProgramInfo(id, name, functions, p.maxDegree());
     }
 
     @Override
     public List<TraceRow> expand(String programId, String function, int degree) {
-        Program p = programStore.getProgram(programId);
+        Program p = requireProgram(programId);
         Program.Rendered r = p.expandToDegree(degree);
-        return toTrace(r.list);
-    }
 
-    /* ================= Regular runs ================= */
+        List<TraceRow> rows = new ArrayList<>(r.list.size());
+        int i = 1;
+        for (Instruction ins : r.list) {
+            rows.add(new TraceRow(
+                    i++,
+                    ins.prettyType(),
+                    safe(ins.label),
+                    safe(ins.text),
+                    Math.max(0, ins.cycles())
+            ));
+        }
+        return rows;
+    }
 
     @Override
     public RunResult run(String userId, String programId, String function,
                          List<Integer> inputs, int degree, String architecture) {
+        Program p = requireProgram(programId);
+        List<Integer> in = (inputs == null) ? List.of() : inputs;
 
-        Program p = programStore.getProgram(programId);
-        int tariff = tariffFor(architecture);
+        Runner.RunResult rr = Runner.run(p, degree, in);
 
-        Runner.RunResult rr = Runner.run(p, degree, inputs);
-        int cycles = rr.cycles;
-        int y = rr.variables.getOrDefault("y", 0);
+        List<TraceRow> trace = new ArrayList<>(rr.rendered.list.size());
+        int i = 1;
+        for (Instruction ins : rr.rendered.list) {
+            trace.add(new TraceRow(
+                    i++,
+                    ins.prettyType(),
+                    safe(ins.label),
+                    safe(ins.text),
+                    Math.max(0, ins.cycles())
+            ));
+        }
 
-        // “charge” = add credits (your UserStore.charge adds to the balance)
-        userStore.charge(userId, cycles * tariff);
+        if (userId != null && !userId.isBlank()) {
+            int runNo = runs.history(userId).size() + 1;
+            runs.addHistory(userId, new HistoryRow(
+                    runNo, Math.max(0, degree), inputsToString(in), rr.y, rr.cycles, System.currentTimeMillis()
+            ));
+        }
 
-        // record history for the UI table
-        runManager.recordHistory(userId, degree, inputs, y, cycles);
-
-        return new RunResult(
-                null, // no runId for regular run
-                y,
-                cycles,
-                new LinkedHashMap<>(rr.variables),
-                toTrace(rr.rendered.list)
-        );
+        String runId = "run-" + UUID.randomUUID();
+        return new RunResult(runId, rr.y, rr.cycles, rr.variables, trace);
     }
-
-    /* ================= Debug ================= */
 
     @Override
     public DebugSession startDebug(String userId, String programId, String function,
                                    List<Integer> inputs, int degree, String architecture) {
-        Program p = programStore.getProgram(programId);
-        int tariff = tariffFor(architecture);
-
-        Debugger dbg = new Debugger(p, degree, inputs);
-        long id = runManager.start(userId, dbg, degree, inputs, tariff);
-
-        return new DebugSession(String.valueOf(id), toState(String.valueOf(id), dbg.snapshot()));
+        Program p = requireProgram(programId);
+        Debugger dbg = new Debugger(p, degree, inputs == null ? List.of() : inputs);
+        String runId = runs.registerDebugger(dbg);
+        return new DebugSession(runId, toState(runId, dbg.rendered(), dbg.snapshot()));
     }
 
     @Override
     public DebugState status(String runId) {
-        Debugger dbg = runManager.get(parseRunId(runId));
-        return toState(runId, dbg.snapshot());
+        Debugger dbg = runs.getDebugger(runId);
+        if (dbg == null) return new DebugState(runId, -1, 0, true, Map.of(), null);
+        return toState(runId, dbg.rendered(), dbg.snapshot());
     }
 
     @Override
     public DebugState step(String runId) {
-        long id = parseRunId(runId);
-        Debugger dbg = runManager.get(id);
-        Debugger.Snapshot snap = dbg.step();
-        if (snap.halted) finalizeDebug(id, snap);
-        return toState(runId, snap);
+        Debugger dbg = runs.getDebugger(runId);
+        if (dbg == null) return new DebugState(runId, -1, 0, true, Map.of(), null);
+        return toState(runId, dbg.rendered(), dbg.step());
     }
 
     @Override
     public DebugState resume(String runId) {
-        long id = parseRunId(runId);
-        Debugger dbg = runManager.get(id);
-        Debugger.Snapshot snap = dbg.snapshot();
-        int guard = 100000; // safety ceiling
-        while (!snap.halted && guard-- > 0) {
-            snap = dbg.step();
+        Debugger dbg = runs.getDebugger(runId);
+        if (dbg == null) return new DebugState(runId, -1, 0, true, Map.of(), null);
+
+        // Your Debugger has no resume(); loop steps until halted.
+        Debugger.Snapshot s = dbg.snapshot();
+        while (!s.halted) {
+            s = dbg.step();
         }
-        if (snap.halted) finalizeDebug(id, snap);
-        return toState(runId, snap);
+        return toState(runId, dbg.rendered(), s);
     }
 
     @Override
     public DebugState stop(String runId) {
-        // No explicit “stop” in Debugger → fast-forward to end.
-        return resume(runId);
+        Debugger dbg = runs.getDebugger(runId);
+        if (dbg == null) return new DebugState(runId, -1, 0, true, Map.of(), null);
+        Debugger.Snapshot s = dbg.snapshot();
+        runs.stop(runId);
+        return new DebugState(runId, s.pc, s.cycles, true, s.vars, null);
     }
-
-    private void finalizeDebug(long runId, Debugger.Snapshot snap) {
-        int tariff = runManager.tariff(runId);
-        String userId = runManager.user(runId);
-        int degree = runManager.degree(runId);
-        List<Integer> inputs = runManager.inputs(runId);
-        int y = snap.vars.getOrDefault("y", 0);
-
-        userStore.charge(userId, snap.cycles * tariff);
-        runManager.recordHistory(userId, degree, inputs, y, snap.cycles);
-        runManager.finish(runId);
-    }
-
-    /* ================= Credits & History ================= */
 
     @Override
     public CreditsState getCredits(String userId) {
-        User u = userStore.getById(userId);
+        User u = users.getById(userId);
         int c = (u == null) ? 0 : u.getCredits();
         return new CreditsState(userId, c);
     }
 
     @Override
     public CreditsState chargeCredits(String userId, int amount) {
-        // Your UserStore.charge only allows positive “top-up”.
-        int credits = userStore.charge(userId, amount);
-        return new CreditsState(userId, credits);
+        int c = users.charge(userId, amount);
+        return new CreditsState(userId, c);
     }
 
     @Override
     public List<HistoryRow> history(String userId) {
-        return runManager.history(userId).stream()
-                .map(h -> new HistoryRow(h.runNo(), h.degree(), h.inputs(), h.y(), h.cycles(), h.timestamp()))
-                .collect(Collectors.toList());
+        return runs.history(userId);
     }
 
-    /* ================= Helpers ================= */
-
-    private int tariffFor(String architecture) {
-        return architectureTariff.getOrDefault(
-                architecture == null ? "Basic" : architecture, 1);
+    private Program requireProgram(String id) {
+        Program p = programs.get(id);
+        if (p == null) throw new NoSuchElementException("program not found: " + id);
+        return p;
     }
 
-    private static List<TraceRow> toTrace(List<Instruction> list) {
-        List<TraceRow> res = new ArrayList<>();
-        int idx = 1;
-        for (Instruction ins : list) {
-            String label = (ins.label == null) ? "" : ins.label;
-            String txt   = (ins.text  == null) ? "" : ins.text;
-            int cycles   = ins.cycles();
-            res.add(new TraceRow(idx++, "B", label, txt, cycles));
+    private static String inputsToString(List<Integer> inputs) {
+        if (inputs == null || inputs.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < inputs.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(inputs.get(i));
         }
-        return res;
+        return sb.toString();
     }
 
-    private DebugState toState(String runId, Debugger.Snapshot snap) {
-        // We don’t expose instruction text from Debugger → leave empty.
-        EngineFacade.TraceRow current = new EngineFacade.TraceRow(
-                Math.max(0, snap.pc), "B", "", "", snap.cycles);
+    private static String safe(String s) { return (s == null) ? "" : s; }
 
-        Map<String,Integer> vars = new LinkedHashMap<>(snap.vars);
-
-        return new DebugState(runId, snap.pc, snap.cycles, snap.halted, vars, current);
+    private static File writeTempXml(String xml) {
+        try {
+            File f = File.createTempFile("program-", ".xml");
+            Files.writeString(f.toPath(), xml == null ? "" : xml, StandardCharsets.UTF_8);
+            return f;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    private static long parseRunId(String runId) {
-        try { return Long.parseLong(runId); }
-        catch (Exception e) { throw new IllegalArgumentException("Bad runId: " + runId); }
+    private static DebugState toState(String runId, Program.Rendered rendered, Debugger.Snapshot s) {
+        TraceRow current = null;
+        if (!s.halted && s.pc >= 0 && s.pc < rendered.list.size()) {
+            Instruction ins = rendered.list.get(s.pc);
+            current = new TraceRow(
+                    s.pc + 1,
+                    ins.prettyType(),
+                    safe(ins.label),
+                    safe(ins.text),
+                    Math.max(0, ins.cycles())
+            );
+        }
+        return new DebugState(runId, s.pc, s.cycles, s.halted, s.vars, current);
     }
 }
