@@ -1,37 +1,60 @@
 package server.core;
 
-import java.util.*;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class UserStore {
     private static final UserStore INSTANCE = new UserStore();
-    public static UserStore get() { return INSTANCE; }
 
-    private final Map<String, User> byId = new ConcurrentHashMap<>();
-    private final Map<String, String> idByName = new ConcurrentHashMap<>();
+    // username -> User
+    private final Map<String, User> byName = new ConcurrentHashMap<>();
+    // id -> User (ids are simple incrementing ints)
+    private final Map<Integer, User> byId = new ConcurrentHashMap<>();
+    private final AtomicInteger seq = new AtomicInteger(1);
 
     private UserStore() {}
 
-    public synchronized User loginOrCreate(String username) {
-        if (username == null || username.isBlank()) {
-            throw new IllegalArgumentException("username is required");
-        }
-        String id = idByName.get(username);
-        if (id != null) return byId.get(id);
-
-        User u = new User(username.trim(), /*startingCredits*/ 1000);
-        byId.put(u.getId(), u);
-        idByName.put(u.getUsername(), u.getId());
-        return u;
+    public static UserStore get() {
+        return INSTANCE;
     }
 
-    public User getById(String id) { return byId.get(id); }
+    /** Create-or-get by username; assigns a simple sequential id on first creation. */
+    public User getOrCreate(String username) {
+        String key = username.trim();
+        return byName.computeIfAbsent(key, n -> {
+            int id = seq.getAndIncrement();
+            User u = new User(id, n, 1000);
+            byId.put(id, u);
+            return u;
+        });
+    }
 
-    public synchronized int charge(String id, int amount) {
-        if (amount <= 0) throw new IllegalArgumentException("amount must be > 0");
-        User u = byId.get(id);
-        if (u == null) throw new NoSuchElementException("user not found");
-        u.addCredits(amount);
+    /** Lookup by username; null if not found. */
+    public User getByName(String username) {
+        if (username == null) return null;
+        return byName.get(username.trim());
+    }
+
+    /** Lookup by string id (EngineFacadeImpl passes String). */
+    public User getById(String userId) {
+        if (userId == null || userId.isBlank()) return null;
+        try {
+            int id = Integer.parseInt(userId.trim());
+            return byId.get(id);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Add (or subtract if negative) credits to the user with the given id string.
+     * Returns the updated credit balance; returns 0 if user not found.
+     */
+    public int charge(String userId, int amount) {
+        User u = getById(userId);
+        if (u == null) return 0;
+        u.setCredits(u.getCredits() + amount);
         return u.getCredits();
     }
 }

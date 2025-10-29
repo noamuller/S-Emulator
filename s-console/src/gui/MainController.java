@@ -58,7 +58,7 @@ public class MainController {
     /* ======== Networking adapter ======== */
     // NOTE: switch to 8080 if your Tomcat runs there:
     // new EngineAdapter("http://localhost:8080/s-server");
-    private final EngineAdapter api = new EngineAdapter("http://localhost:8081/s-server");
+    private final EngineAdapter api = new EngineAdapter("http://localhost:8080/s-server");
 
     /* ======== Local state ======== */
     private ProgramInfo currentProgram = null;

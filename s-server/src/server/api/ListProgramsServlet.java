@@ -6,7 +6,7 @@ import java.io.IOException;
 import java.util.*;
 import server.core.*;
 
-@WebServlet("/api/programs/meta")
+@WebServlet("/api/programs")
 public class ListProgramsServlet extends HttpServlet {
 
     @Override
