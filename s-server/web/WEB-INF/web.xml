@@ -5,10 +5,9 @@
         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
         version="5.0">
 
-    <!-- ===== Context-wide init ===== -->
     <display-name>s-server</display-name>
 
-    <!-- If your container is not scanning annotations, make sure we init the facade -->
+    <!-- Ensure facade singletons are created -->
     <listener>
         <listener-class>server.api.Bootstrap</listener-class>
     </listener>
@@ -20,7 +19,13 @@
     </servlet>
     <servlet-mapping>
         <servlet-name>UploadProgramServlet</servlet-name>
+        <!-- canonical -->
         <url-pattern>/api/programs/upload</url-pattern>
+    </servlet-mapping>
+    <!-- compatibility alias: client missing slash -> /api/programsupload -->
+    <servlet-mapping>
+        <servlet-name>UploadProgramServlet</servlet-name>
+        <url-pattern>/api/programsupload</url-pattern>
     </servlet-mapping>
 
     <servlet>
@@ -29,7 +34,13 @@
     </servlet>
     <servlet-mapping>
         <servlet-name>ProgramExpandServlet</servlet-name>
+        <!-- canonical -->
         <url-pattern>/api/programs/expand</url-pattern>
+    </servlet-mapping>
+    <!-- compatibility alias: /api/programsexpand -->
+    <servlet-mapping>
+        <servlet-name>ProgramExpandServlet</servlet-name>
+        <url-pattern>/api/programsexpand</url-pattern>
     </servlet-mapping>
 
     <servlet>
@@ -50,6 +61,11 @@
         <servlet-name>StartRunServlet</servlet-name>
         <url-pattern>/api/runs/start</url-pattern>
     </servlet-mapping>
+    <!-- alias just in case -->
+    <servlet-mapping>
+        <servlet-name>StartRunServlet</servlet-name>
+        <url-pattern>/api/runsstart</url-pattern>
+    </servlet-mapping>
 
     <servlet>
         <servlet-name>RunStatusServlet</servlet-name>
@@ -58,6 +74,11 @@
     <servlet-mapping>
         <servlet-name>RunStatusServlet</servlet-name>
         <url-pattern>/api/runs/status</url-pattern>
+    </servlet-mapping>
+    <!-- alias -->
+    <servlet-mapping>
+        <servlet-name>RunStatusServlet</servlet-name>
+        <url-pattern>/api/runsstatus</url-pattern>
     </servlet-mapping>
 
     <servlet>
@@ -68,7 +89,6 @@
         <servlet-name>RunStepServlet</servlet-name>
         <url-pattern>/api/debug/step</url-pattern>
     </servlet-mapping>
-
     <servlet>
         <servlet-name>RunResumeServlet</servlet-name>
         <servlet-class>server.api.RunResumeServlet</servlet-class>
@@ -77,7 +97,6 @@
         <servlet-name>RunResumeServlet</servlet-name>
         <url-pattern>/api/debug/resume</url-pattern>
     </servlet-mapping>
-
     <servlet>
         <servlet-name>RunStopServlet</servlet-name>
         <servlet-class>server.api.RunStopServlet</servlet-class>
@@ -115,7 +134,7 @@
         <url-pattern>/api/credits/charge</url-pattern>
     </servlet-mapping>
 
-    <!-- Optional hello ping -->
+    <!-- Optional ping -->
     <servlet>
         <servlet-name>HelloServlet</servlet-name>
         <servlet-class>server.api.HelloServlet</servlet-class>
@@ -124,5 +143,4 @@
         <servlet-name>HelloServlet</servlet-name>
         <url-pattern>/api/hello</url-pattern>
     </servlet-mapping>
-
 </web-app>

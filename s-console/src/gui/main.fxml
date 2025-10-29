@@ -1,166 +1,203 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<?import javafx.geometry.Insets?>
+
+<?import javafx.geometry.*?>
 <?import javafx.scene.control.*?>
 <?import javafx.scene.layout.*?>
-<?import javafx.scene.text.Font?>
 
 <BorderPane xmlns="http://javafx.com/javafx/21" xmlns:fx="http://javafx.com/fxml/1"
-            fx:controller="gui.MainController">
+            fx:controller="gui.MainController"
+            prefWidth="1280" prefHeight="800">
 
-
+    <!-- TOP BAR (shared look) -->
     <top>
-        <VBox spacing="2">
-
-            <HBox spacing="6" alignment="CENTER_LEFT">
-                <padding><Insets top="4" right="6" bottom="0" left="6"/></padding>
-                <Label text="Loaded file path:"/>
-                <TextField fx:id="loadedPathField" editable="false"
-                           promptText="(no file loaded yet)" HBox.hgrow="ALWAYS"/>
-            </HBox>
-
-
-            <ToolBar>
-                <Button text="Load XML" onAction="#onLoadXml"/>
-                <Separator/>
-                <Label text="Function:"/>
-                <ComboBox fx:id="functionCombo" promptText="(all)" prefWidth="130"/>
-                <Separator/>
-                <Label text="Degree:"/>
-                <TextField fx:id="degreeField" prefWidth="56"/>
-                <Label text="/"/>
-                <TextField fx:id="maxDegreeField" prefWidth="56" editable="false"/>
-                <Button text="Show Program" onAction="#onShowProgram"/>
-                <Button text="Expand" onAction="#onExpand"/>
-                <Button text="Collapse" onAction="#onCollapse"/>
-                <Pane HBox.hgrow="ALWAYS"/>
-                <Label text="S-Emulator" style="-fx-opacity:0.65;">
-                    <font><Font size="12"/></font>
-                </Label>
-            </ToolBar>
-        </VBox>
+        <ToolBar styleClass="topbar">
+            <Hyperlink text="User Name" onAction="#showDashboard" styleClass="link-strong"/>
+            <Pane HBox.hgrow="ALWAYS"/>
+            <Label text="S-Emulator — Dashboard" fx:id="topTitle" styleClass="app-title"/>
+            <Pane HBox.hgrow="ALWAYS"/>
+            <Label text="Available Credits:"/>
+            <Label fx:id="creditsValue" text="___" styleClass="badge"/>
+        </ToolBar>
     </top>
 
-
     <center>
-        <SplitPane dividerPositions="0.62">
-            <items>
+        <StackPane fx:id="rootStack">
 
-                <VBox spacing="6">
-                    <TableView fx:id="instructionTable" VBox.vgrow="ALWAYS">
-                        <columnResizePolicy>
-                            <TableView fx:constant="CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS"/>
-                        </columnResizePolicy>
-                        <columns>
-                            <TableColumn fx:id="colIndex" text="#" prefWidth="60"/>
-                            <TableColumn fx:id="colType" text="B\\S" prefWidth="70"/>
-                            <TableColumn fx:id="colLabel" text="Label" prefWidth="160"/>
-                            <TableColumn fx:id="colInstruction" text="Instruction" prefWidth="420"/>
-                            <TableColumn fx:id="colCycles" text="Cycles" prefWidth="110"/>
-                        </columns>
-                    </TableView>
+            <!-- ================== DASHBOARD ================== -->
+            <BorderPane fx:id="dashboardPane" visible="true" managed="true">
+                <center>
+                    <GridPane hgap="16" vgap="16">
+                        <padding><Insets top="16" right="16" bottom="16" left="16"/></padding>
+                        <columnConstraints>
+                            <ColumnConstraints percentWidth="50" hgrow="ALWAYS"/>
+                            <ColumnConstraints percentWidth="50" hgrow="ALWAYS"/>
+                        </columnConstraints>
 
-                    <Accordion>
-                        <panes>
-                            <TitledPane text="Filters" expanded="false">
-                                <VBox spacing="6">
-                                    <padding><Insets top="6" right="6" bottom="6" left="6"/></padding>
-                                    <Label text="(filters here)"/>
-                                </VBox>
-                            </TitledPane>
-                            <TitledPane text="Selected instruction history chain" expanded="false">
-                                <VBox spacing="6">
-                                    <padding><Insets top="6" right="6" bottom="6" left="6"/></padding>
-                                    <Label text="(selected chain details here)"/>
-                                </VBox>
-                            </TitledPane>
-                        </panes>
-                    </Accordion>
-                </VBox>
+                        <!-- Top row: load + path + charge -->
+                        <HBox spacing="10" GridPane.columnSpan="2">
+                            <Button text="Load File Button" onAction="#loadXml" styleClass="accent"/>
+                            <TextField fx:id="loadedPathField" promptText="Currently Loaded File path" HBox.hgrow="ALWAYS"/>
+                            <Button text="Charge Credits" onAction="#chargeCredits" styleClass="accent"/>
+                            <TextField fx:id="creditsField" promptText="credits" prefWidth="90"/>
+                        </HBox>
 
-
-                <VBox spacing="8">
-                    <padding><Insets top="6" right="6" bottom="6" left="6"/></padding>
-
-
-                    <TitledPane text="Debugger" expanded="true">
-                        <VBox spacing="6">
-                            <padding><Insets top="6" right="6" bottom="6" left="6"/></padding>
-
-                            <GridPane hgap="12" vgap="6">
-                                <columnConstraints>
-                                    <ColumnConstraints minWidth="40"/>
-                                    <ColumnConstraints minWidth="60" prefWidth="100"/>
-                                    <ColumnConstraints minWidth="40"/>
-                                    <ColumnConstraints minWidth="60" prefWidth="100"/>
-                                </columnConstraints>
-                                <rowConstraints>
-                                    <RowConstraints minHeight="10"/>
-                                    <RowConstraints minHeight="10"/>
-                                </rowConstraints>
-                                <children>
-                                    <Label text="PC:" GridPane.rowIndex="0" GridPane.columnIndex="0"/>
-                                    <Label fx:id="pcLabel" text="*" GridPane.rowIndex="0" GridPane.columnIndex="1"/>
-                                    <Label text="Cycles:" GridPane.rowIndex="0" GridPane.columnIndex="2"/>
-                                    <Label fx:id="cyclesLabel" text="0" GridPane.rowIndex="0" GridPane.columnIndex="3"/>
-                                    <Label text="Halted:" GridPane.rowIndex="1" GridPane.columnIndex="0"/>
-                                    <Label fx:id="haltedLabel" text="false" GridPane.rowIndex="1" GridPane.columnIndex="1"/>
-                                </children>
-                            </GridPane>
-
-                            <HBox spacing="6">
-                                <Button text="Start Debug" onAction="#onDebugStart"/>
-                                <Button text="Resume" onAction="#onDebugResume"/>
-                                <Button text="Step" onAction="#onDebugStep"/>
-                                <Button text="Stop" onAction="#onDebugStop"/>
-                            </HBox>
-
-                            <TextArea fx:id="debugLogArea" promptText="Debugger log..."
-                                      wrapText="true" prefRowCount="6" VBox.vgrow="ALWAYS"/>
-                        </VBox>
-                    </TitledPane>
-
-
-                    <TitledPane text="Run" expanded="true">
-                        <VBox spacing="6">
-                            <padding><Insets top="6" right="6" bottom="6" left="6"/></padding>
-
-                            <HBox spacing="6" alignment="CENTER_LEFT">
-                                <Label text="Inputs:"/>
-                                <TextField fx:id="singleInputField" promptText="0" prefWidth="60"/>
-                                <Button text="Add" onAction="#onRunAddInput"/>
-                                <Button text="Remove selected" onAction="#onRunRemoveSelected"/>
-                                <Button text="Clear" onAction="#onRunClear"/>
-                                <Pane HBox.hgrow="ALWAYS"/>
-                                <Button text="Run" onAction="#onRunExecute"/>
-                            </HBox>
-
-                            <TextArea fx:id="inputsArea" promptText="input list (e.g., 7, 3)" prefRowCount="2"/>
-                            <TextArea fx:id="resultsArea" promptText="RESULTS" prefRowCount="8" VBox.vgrow="ALWAYS"/>
-                        </VBox>
-                    </TitledPane>
-
-
-                    <TitledPane text="History" expanded="true">
-                        <VBox spacing="6">
-                            <padding><Insets top="6" right="6" bottom="6" left="6"/></padding>
-
-                            <TableView fx:id="historyTable" prefHeight="160">
-                                <columnResizePolicy>
-                                    <TableView fx:constant="CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS"/>
-                                </columnResizePolicy>
+                        <!-- Available Users -->
+                        <VBox spacing="10" GridPane.rowIndex="1" GridPane.columnIndex="0" styleClass="panel">
+                            <Label text="Available Users" styleClass="panel-title"/>
+                            <TableView fx:id="usersTable" VBox.vgrow="ALWAYS">
                                 <columns>
-                                    <TableColumn fx:id="hColRun" text="# " prefWidth="60"/>
-                                    <TableColumn fx:id="hColDegree" text="Degree" prefWidth="80"/>
-                                    <TableColumn fx:id="hColInputs" text="Inputs" prefWidth="160"/>
-                                    <TableColumn fx:id="hColY" text="y" prefWidth="80"/>
-                                    <TableColumn fx:id="hColCycles" text="Cycles" prefWidth="100"/>
+                                    <TableColumn fx:id="colUserName" text="User"/>
+                                    <TableColumn fx:id="colUserCredits" text="Credits" prefWidth="120"/>
                                 </columns>
                             </TableView>
-                            <Button text="Re-run selected" maxWidth="Infinity" onAction="#onHistoryRerunSelected"/>
+                            <HBox alignment="CENTER_LEFT" spacing="10">
+                                <Button text="Unselect User" onAction="#logoutUser" styleClass="accent"/>
+                            </HBox>
                         </VBox>
-                    </TitledPane>
-                </VBox>
-            </items>
-        </SplitPane>
+
+                        <!-- Available Programs -->
+                        <VBox spacing="10" GridPane.rowIndex="1" GridPane.columnIndex="1" styleClass="panel">
+                            <Label text="Available Programs" styleClass="panel-title"/>
+                            <TableView fx:id="programsTable" VBox.vgrow="ALWAYS">
+                                <columns>
+                                    <TableColumn fx:id="colProgramName" text="Program"/>
+                                    <TableColumn fx:id="colMaxDegree" text="Max degree" prefWidth="120"/>
+                                    <TableColumn fx:id="colProgramId" text="Id" prefWidth="240"/>
+                                </columns>
+                            </TableView>
+                            <HBox alignment="CENTER_RIGHT">
+                                <Button text="Execute Program" onAction="#switchToExecution" styleClass="accent"/>
+                            </HBox>
+                        </VBox>
+
+                        <!-- Users History \ Statistics Table -->
+                        <VBox spacing="10" GridPane.rowIndex="2" GridPane.columnIndex="0" styleClass="panel">
+                            <Label text="Users History \\ Statistics Table" styleClass="panel-title"/>
+                            <TableView fx:id="historyTable" VBox.vgrow="ALWAYS">
+                                <columns>
+                                    <TableColumn fx:id="colHistIdx" text="#" prefWidth="60"/>
+                                    <TableColumn fx:id="colHistDegree" text="Degree" prefWidth="100"/>
+                                    <TableColumn fx:id="colHistInputs" text="Inputs"/>
+                                    <TableColumn fx:id="colHistY" text="y" prefWidth="100"/>
+                                    <TableColumn fx:id="colHistCycles" text="Cycles" prefWidth="120"/>
+                                </columns>
+                            </TableView>
+                        </VBox>
+
+                        <!-- Available Functions -->
+                        <VBox spacing="10" GridPane.rowIndex="2" GridPane.columnIndex="1" styleClass="panel">
+                            <Label text="Available Functions" styleClass="panel-title"/>
+                            <HBox spacing="10">
+                                <ComboBox fx:id="functionCombo" promptText="(main)" prefWidth="260"/>
+                                <Label text="Degree:"/>
+                                <Spinner fx:id="degreeSpinner" editable="true" prefWidth="100"/>
+                                <Button text="Show Program" onAction="#showProgram"/>
+                            </HBox>
+                            <Pane VBox.vgrow="ALWAYS"/>
+                            <HBox alignment="CENTER_RIGHT">
+                                <Button text="Execute Program" onAction="#switchToExecution" styleClass="accent"/>
+                            </HBox>
+                        </VBox>
+                    </GridPane>
+                </center>
+            </BorderPane>
+
+            <!-- ================== EXECUTION ================== -->
+            <BorderPane fx:id="executionPane" visible="false" managed="false">
+                <top>
+                    <ToolBar styleClass="topbar">
+                        <Hyperlink text="User Name" onAction="#switchToDashboard" styleClass="link-strong"/>
+                        <Pane HBox.hgrow="ALWAYS"/>
+                        <Label text="S-Emulator – Execution" styleClass="app-title"/>
+                        <Pane HBox.hgrow="ALWAYS"/>
+                        <Label text="Available Credits:"/>
+                        <Label fx:id="execCredits" text="___" styleClass="badge"/>
+                    </ToolBar>
+                </top>
+
+                <center>
+                    <GridPane hgap="16" vgap="16">
+                        <padding><Insets top="16" right="16" bottom="16" left="16"/></padding>
+                        <columnConstraints>
+                            <ColumnConstraints percentWidth="68" hgrow="ALWAYS"/>
+                            <ColumnConstraints percentWidth="32" hgrow="ALWAYS"/>
+                        </columnConstraints>
+
+                        <!-- Left: Degree Commands banner + Highlight -->
+                        <HBox spacing="10" GridPane.columnIndex="0">
+                            <Button text="Degree Commands and information" disable="true" styleClass="banner"/>
+                            <Pane HBox.hgrow="ALWAYS"/>
+                            <Button text="Highlight selection" onAction="#highlightSelection"/>
+                        </HBox>
+
+                        <!-- Right: Debug header -->
+                        <Label text="Debugger\\Execution" GridPane.columnIndex="1" styleClass="panel-title"/>
+
+                        <!-- Instructions table -->
+                        <VBox spacing="8" GridPane.rowIndex="1" GridPane.columnIndex="0" styleClass="panel">
+                            <Label text="Instructions table" styleClass="panel-subtitle"/>
+                            <TableView fx:id="instructionsTable" VBox.vgrow="ALWAYS">
+                                <columns>
+                                    <TableColumn fx:id="colRowIdx" text="#" prefWidth="60"/>
+                                    <TableColumn fx:id="colType" text="B\\S" prefWidth="80"/>
+                                    <TableColumn fx:id="colCycles" text="Cycles" prefWidth="100"/>
+                                    <TableColumn fx:id="colText" text="Instruction" prefWidth="520"/>
+                                    <TableColumn fx:id="colCycles2" text="Cycles" prefWidth="100"/>
+                                    <TableColumn fx:id="colArch" text="Architecture" prefWidth="140"/>
+                                </columns>
+                            </TableView>
+
+                            <TextField promptText="(advanced) Summary line" editable="false"/>
+                        </VBox>
+
+                        <!-- Selected instruction history chain -->
+                        <VBox spacing="8" GridPane.rowIndex="2" GridPane.columnIndex="0" styleClass="panel">
+                            <Label text="Selected Instruction history chain" styleClass="panel-subtitle"/>
+                            <TextArea fx:id="lineageArea" prefRowCount="6" wrapText="true"/>
+                        </VBox>
+
+                        <!-- Right column: debugger, variables, inputs, cycles, back -->
+                        <VBox spacing="12" GridPane.rowIndex="1" GridPane.columnIndex="1">
+                            <VBox spacing="8" styleClass="panel-yellow">
+                                <Label text="Debugger\\ Execution Commands:" styleClass="panel-subtitle"/>
+                                <HBox spacing="8">
+                                    <Button text="Start Execution" onAction="#runProgram"/>
+                                    <Button text="Start Regular" onAction="#runProgram"/>
+                                    <Button text="Start Debug" onAction="#startDebug"/>
+                                </HBox>
+                                <HBox spacing="8">
+                                    <Button text="Stop" onAction="#stopDebug"/>
+                                    <Button text="Resume" onAction="#resumeDebug"/>
+                                    <Button text="Step forward" onAction="#stepDebug"/>
+                                </HBox>
+                            </VBox>
+
+                            <HBox spacing="12">
+                                <VBox spacing="8" HBox.hgrow="ALWAYS" styleClass="panel-magenta">
+                                    <Label text="Variables" styleClass="panel-subtitle"/>
+                                    <TextArea fx:id="variablesArea" prefRowCount="12"/>
+                                </VBox>
+                                <VBox spacing="8" HBox.hgrow="ALWAYS" styleClass="panel-blue">
+                                    <Label text="Execution Inputs" styleClass="panel-subtitle"/>
+                                    <TextField fx:id="inputsListField" promptText="7, 3"/>
+                                    <HBox spacing="8">
+                                        <Spinner fx:id="inputSpinner" prefWidth="100" editable="true"/>
+                                        <Button text="Add" onAction="#addInput"/>
+                                        <Button text="Clear" onAction="#clearInputs"/>
+                                    </HBox>
+                                    <TextArea fx:id="resultsArea" promptText="RESULTS" prefRowCount="6"/>
+                                </VBox>
+                            </HBox>
+
+                            <HBox spacing="12">
+                                <TextField fx:id="cyclesField" promptText="Cycles" editable="false" HBox.hgrow="ALWAYS" styleClass="panel-green"/>
+                                <Button text="Back to Dashboard" onAction="#switchToDashboard" styleClass="accent"/>
+                            </HBox>
+                        </VBox>
+                    </GridPane>
+                </center>
+            </BorderPane>
+
+        </StackPane>
     </center>
 </BorderPane>
