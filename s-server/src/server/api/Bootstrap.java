@@ -15,13 +15,14 @@ public class Bootstrap implements ServletContextListener {
 
     @Override
     public void contextInitialized(ServletContextEvent sce) {
-        // Use the singleton ProgramStore so everyone (including ListProgramsServlet) sees the same data
+        // Create singletons
         ProgramStore programStore = ProgramStore.get();
-        UserStore    userStore    = UserStore.get();
-        RunManager   runManager   = new RunManager();
+        UserStore userStore       = UserStore.get();
+        RunManager runManager     = new RunManager();
 
         EngineFacade facade = new EngineFacadeImpl(programStore, userStore, runManager);
 
+        // Share one Facade across all servlets
         sce.getServletContext().setAttribute("facade", facade);
         System.out.println("[Bootstrap] EngineFacade registered under key 'facade'");
     }

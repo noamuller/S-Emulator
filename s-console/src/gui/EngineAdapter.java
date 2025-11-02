@@ -1,345 +1,357 @@
 package gui;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.HttpURLConnection;
-import java.net.URLEncoder;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/**
- * Plain-Java HTTP adapter (no external libs).
- * Talks to /api/programs/* and /api/runs*.
- * Very tolerant JSON parsing using simple string/regex scanning.
- */
-public class EngineAdapter {
+public final class EngineAdapter {
 
-    private final String base;
+    private final String base; // e.g. "http://localhost:8080/s-server"
+    public EngineAdapter(String base) { this.base = base; }
 
-    public EngineAdapter(String baseUrl) {
-        // Normalize: no trailing slash
-        this.base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-    }
+    /* =================== Public DTOs (UI-facing) =================== */
 
-    /* ===========================================================
-       Upload XML  -> ProgramInfo(id, name, functions[], maxDegree)
-       =========================================================== */
-    public ProgramInfo uploadXml(Path xmlPath) throws IOException {
-        String xml = Files.readString(xmlPath, StandardCharsets.UTF_8);
-        String url = base + "/api/programs/upload";
-        String resp = httpPost(url, "text/xml; charset=UTF-8", xml);
-
-        // Extract fields from JSON
-        String id = extractFirst(resp, "\"id\"\\s*:\\s*\"([^\"]+)\"");
-        if (id.isEmpty()) id = extractFirst(resp, "\"programId\"\\s*:\\s*\"([^\"]+)\"");
-        String name = extractFirst(resp, "\"name\"\\s*:\\s*\"([^\"]+)\"");
-        String maxDegStr = extractFirst(resp, "\"maxDegree\"\\s*:\\s*(\\d+)");
-        int maxDegree = maxDegStr.isEmpty() ? 0 : Integer.parseInt(maxDegStr);
-
-        List<String> functions = extractStringArray(resp, "\"functions\"\\s*:\\s*\\[([^\\]]*)\\]");
-        if (functions.isEmpty()) functions = List.of("(main)");
-
-        return new ProgramInfo(id, name, functions, maxDegree);
-    }
-
-    /* ===========================================================
-       Expand program (instructions list) -> List<TraceRow>
-       Accepts either:
-         A) proper JSON rows ([{index:..., type:..., label:..., instr/text:..., cycles:...}, ...])
-         B) stringified "TraceRow[index=1, type=S, ...]" form
-       =========================================================== */
-    public List<TraceRow> expand(String programId, String function, int degree) throws IOException {
-        String url = String.format(
-                "%s/api/programs/expand?programId=%s&function=%s&degree=%d",
-                base, enc(programId), enc(function), degree);
-
-        String resp = httpGet(url);
-
-        // Try JSON object array first
-        List<TraceRow> rows = parseRowsAsJsonObjects(resp);
-        if (!rows.isEmpty()) return rows;
-
-        // Fallback: parse "TraceRow[...]" strings
-        return parseRowsFromTraceStrings(resp);
-    }
-
-    /* ===========================================================
-       Runs / Debugging
-       =========================================================== */
-
-    /** One-shot run. */
-    public RunResult runOnce(String programId, String function, List<Integer> inputs, int degree, String architecture) throws IOException {
-        String url = base + "/api/runs";
-        String body = buildJson(Map.of(
-                "programId", programId,
-                "function",  function,
-                "degree",    degree,
-                "architecture", opt(architecture),
-                "inputs",    inputs == null ? List.of() : inputs
-        ));
-        String resp = httpPost(url, "application/json; charset=UTF-8", body);
-
-        int y = parseInt(extractFirst(resp, "\"y\"\\s*:\\s*(\\-?\\d+)"), 0);
-        int cycles = parseInt(extractFirst(resp, "\"cycles\"\\s*:\\s*(\\d+)"), 0);
-        Map<String,Integer> vars = parseVars(resp);
-
-        return new RunResult(y, cycles, vars);
-    }
-
-    /** Start a debug session. Uses the same endpoint to obtain a runId and initial state. */
-    public DebugState startDebug(String programId, String function, List<Integer> inputs, int degree, String architecture) throws IOException {
-        String url = base + "/api/runs";
-        String body = buildJson(Map.of(
-                "programId",    programId,
-                "function",     function,
-                "degree",       degree,
-                "architecture", opt(architecture),
-                "inputs",       inputs == null ? List.of() : inputs,
-                "mode",         "debug"      // harmless hint; server may ignore
-        ));
-        String resp = httpPost(url, "application/json; charset=UTF-8", body);
-        String runId = extractFirst(resp, "\"runId\"\\s*:\\s*\"([^\"]+)\"");
-        int cycles = parseInt(extractFirst(resp, "\"cycles\"\\s*:\\s*(\\d+)"), 0);
-        Map<String,Integer> vars = parseVars(resp);
-        TraceRow current = parseCurrentFromRun(resp);
-
-        return new DebugState(runId, cycles, vars, current);
-    }
-
-    /** Resume a paused debug run. */
-    public DebugState resume(String runId) throws IOException {
-        String url = base + "/api/runs/resume";
-        String body = buildJson(Map.of("runId", runId));
-        String resp = httpPost(url, "application/json; charset=UTF-8", body);
-        return parseDebugState(resp);
-    }
-
-    /** Single step a debug run. */
-    public DebugState step(String runId) throws IOException {
-        String url = base + "/api/runs/step";
-        String body = buildJson(Map.of("runId", runId));
-        String resp = httpPost(url, "application/json; charset=UTF-8", body);
-        return parseDebugState(resp);
-    }
-
-    /** Stop a debug run. */
-    public DebugState stop(String runId) throws IOException {
-        String url = base + "/api/runs/stop";
-        String body = buildJson(Map.of("runId", runId));
-        String resp = httpPost(url, "application/json; charset=UTF-8", body);
-        return parseDebugState(resp);
-    }
-
-    /* ===========================================================
-       Internal parsers (regex-only)
-       =========================================================== */
-
-    private static List<TraceRow> parseRowsAsJsonObjects(String resp) {
-        List<TraceRow> rows = new ArrayList<>();
-        String rowsBlock = extractFirst(resp, "\"rows\"\\s*:\\s*\\[([\\s\\S]*?)\\]");
-        if (rowsBlock.isEmpty()) return rows;
-        if (!rowsBlock.contains("{")) return rows;
-
-        List<String> items = splitObjectArray(rowsBlock);
-        for (String item : items) {
-            int idx = parseInt(extractFirst(item, "\"index\"\\s*:\\s*(\\d+)"), 0);
-            String type = extractFirst(item, "\"type\"\\s*:\\s*\"([^\"]*)\"");
-            String label = extractFirst(item, "\"label\"\\s*:\\s*\"([^\"]*)\"");
-            String instr = extractFirst(item, "\"instr\"\\s*:\\s*\"([^\"]*)\"");
-            if (instr.isEmpty()) instr = extractFirst(item, "\"text\"\\s*:\\s*\"([^\"]*)\"");
-            int cycles = parseInt(extractFirst(item, "\"cycles\"\\s*:\\s*(\\d+)"), 0);
-            rows.add(new TraceRow(idx, type, label, instr, cycles));
+    public static final class ProgramInfo {
+        public final String id, name;
+        public final int maxDegree;
+        public final List<String> functions;
+        public ProgramInfo(String id, String name, int maxDegree, List<String> functions) {
+            this.id = id; this.name = name; this.maxDegree = maxDegree; this.functions = functions;
         }
-        return rows;
+        public String getId() { return id; }
+        public String getName() { return name; }
+        public int getMaxDegree() { return maxDegree; }
+        public List<String> getFunctions() { return functions; }
     }
 
-    private static List<String> splitObjectArray(String rowsBlock) {
-        List<String> out = new ArrayList<>();
-        int brace = 0;
-        StringBuilder sb = new StringBuilder();
-        boolean inString = false;
-        for (int i = 0; i < rowsBlock.length(); i++) {
-            char c = rowsBlock.charAt(i);
-            sb.append(c);
-            if (c == '"' && (i == 0 || rowsBlock.charAt(i - 1) != '\\')) inString = !inString;
-            if (!inString) {
-                if (c == '{') brace++;
-                else if (c == '}') brace--;
-                else if (c == ',' && brace == 0) {
-                    out.add(sb.toString());
-                    sb.setLength(0);
-                }
-            }
+    public static final class TraceRow {
+        public final int index; public final String type; public final String text; public final int cycles;
+        public TraceRow(int index, String type, String text, int cycles) {
+            this.index = index; this.type = type; this.text = text; this.cycles = cycles;
         }
-        String last = sb.toString().trim();
-        if (!last.isEmpty()) out.add(last);
-        for (int i = 0; i < out.size(); i++) {
-            String s = out.get(i).trim();
-            if (!s.startsWith("{")) s = "{" + s;
-            if (!s.endsWith("}")) s = s + "}";
-            out.set(i, s);
-        }
-        return out;
+        public int index() { return index; }
+        public String type() { return type; }
+        public String text() { return text; }
+        public int cycles() { return cycles; }
     }
-
-    private static List<TraceRow> parseRowsFromTraceStrings(String resp) {
-        List<TraceRow> rows = new ArrayList<>();
-        var p = java.util.regex.Pattern.compile(
-                "index\\s*=\\s*(\\d+)\\s*,\\s*" +
-                        "type\\s*=\\s*([^,]+)\\s*,\\s*" +
-                        "label\\s*=\\s*([^,]*)\\s*,\\s*" +
-                        "(?:instr|text)\\s*=\\s*([^,]+)\\s*,\\s*" +
-                        "cycles\\s*=\\s*(\\d+)",
-                java.util.regex.Pattern.CASE_INSENSITIVE);
-
-        var m = p.matcher(resp);
-        while (m.find()) {
-            int idx = parseInt(m.group(1).trim(), 0);
-            String type = m.group(2).trim();
-            String label = m.group(3).trim();
-            String instr = m.group(4).trim();
-            int cycles = parseInt(m.group(5).trim(), 0);
-            rows.add(new TraceRow(idx, type, label, instr, cycles));
-        }
-        return rows;
-    }
-
-    private static Map<String,Integer> parseVars(String resp) {
-        String block = extractFirst(resp, "\"variables\"\\s*:\\s*\\{([\\s\\S]*?)\\}");
-        Map<String,Integer> vars = new LinkedHashMap<>();
-        if (block.isEmpty()) return vars;
-        var m = java.util.regex.Pattern.compile("\"([^\"]+)\"\\s*:\\s*(-?\\d+)").matcher(block);
-        while (m.find()) vars.put(m.group(1), parseInt(m.group(2), 0));
-        return vars;
-    }
-
-    private static TraceRow parseCurrentFromRun(String resp) {
-        String obj = extractFirst(resp, "\"current\"\\s*:\\s*\\{([\\s\\S]*?)\\}");
-        if (obj.isEmpty()) return null;
-        int idx = parseInt(extractFirst(obj, "\"index\"\\s*:\\s*(\\d+)"), 0);
-        String type = extractFirst(obj, "\"type\"\\s*:\\s*\"([^\"]*)\"");
-        String label = extractFirst(obj, "\"label\"\\s*:\\s*\"([^\"]*)\"");
-        String instr = extractFirst(obj, "\"instr\"\\s*:\\s*\"([^\"]*)\"");
-        if (instr.isEmpty()) instr = extractFirst(obj, "\"text\"\\s*:\\s*\"([^\"]*)\"");
-        int cycles = parseInt(extractFirst(obj, "\"cycles\"\\s*:\\s*(\\d+)"), 0);
-        return new TraceRow(idx, type, label, instr, cycles);
-    }
-
-    private static DebugState parseDebugState(String resp) {
-        String runId = extractFirst(resp, "\"runId\"\\s*:\\s*\"([^\"]+)\"");
-        int cycles = parseInt(extractFirst(resp, "\"cycles\"\\s*:\\s*(\\d+)"), 0);
-        Map<String,Integer> vars = parseVars(resp);
-        TraceRow current = parseCurrentFromRun(resp);
-        return new DebugState(runId, cycles, vars, current);
-    }
-
-    /* ===========================================================
-       Low-level HTTP (UTF-8)
-       =========================================================== */
-
-    private static String httpPost(String url, String contentType, String body) throws IOException {
-        HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
-        con.setDoOutput(true);
-        con.setRequestMethod("POST");
-        con.setRequestProperty("Content-Type", contentType);
-        try (OutputStream os = con.getOutputStream()) {
-            os.write(body.getBytes(StandardCharsets.UTF_8));
-        }
-        int code = con.getResponseCode();
-        InputStream is = (code >= 200 && code < 300) ? con.getInputStream() : con.getErrorStream();
-        try (is) { return new String(is.readAllBytes(), StandardCharsets.UTF_8); }
-    }
-
-    private static String httpGet(String url) throws IOException {
-        HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
-        con.setRequestMethod("GET");
-        int code = con.getResponseCode();
-        InputStream is = (code >= 200 && code < 300) ? con.getInputStream() : con.getErrorStream();
-        try (is) { return new String(is.readAllBytes(), StandardCharsets.UTF_8); }
-    }
-
-    /* ===========================================================
-       Tiny helpers
-       =========================================================== */
-
-    private static String extractFirst(String text, String regex) {
-        var m = java.util.regex.Pattern.compile(regex).matcher(text);
-        return m.find() ? m.group(1) : "";
-    }
-
-    private static List<String> extractStringArray(String text, String regex) {
-        var m = java.util.regex.Pattern.compile(regex).matcher(text);
-        if (!m.find()) return List.of();
-        String inside = m.group(1);
-        var m2 = java.util.regex.Pattern.compile("\"([^\"]*)\"").matcher(inside);
-        List<String> out = new ArrayList<>();
-        while (m2.find()) out.add(m2.group(1));
-        return out;
-    }
-
-    private static String enc(String s) {
-        return URLEncoder.encode(s, StandardCharsets.UTF_8);
-    }
-
-    private static int parseInt(String s, int def) {
-        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
-    }
-
-    // poor-man JSON builder that handles primitives, strings, lists and maps you pass here.
-    private static String buildJson(Object obj) {
-        if (obj == null) return "null";
-        if (obj instanceof String s) return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
-        if (obj instanceof Number || obj instanceof Boolean) return obj.toString();
-        if (obj instanceof Map<?,?> m) {
-            StringBuilder sb = new StringBuilder("{");
-            boolean first = true;
-            for (var e : m.entrySet()) {
-                if (!first) sb.append(',');
-                first = false;
-                sb.append(buildJson(e.getKey().toString())).append(':').append(buildJson(e.getValue()));
-            }
-            sb.append('}');
-            return sb.toString();
-        }
-        if (obj instanceof Iterable<?> it) {
-            StringBuilder sb = new StringBuilder("[");
-            boolean first = true;
-            for (Object o : it) {
-                if (!first) sb.append(',');
-                first = false;
-                sb.append(buildJson(o));
-            }
-            sb.append(']');
-            return sb.toString();
-        }
-        return buildJson(obj.toString());
-    }
-    private static String opt(String s) { return (s == null) ? "" : s; }
-
-    /* ===========================================================
-       DTOs for run/debug responses
-       =========================================================== */
 
     public static final class RunResult {
+        public final String runId;
         public final int y;
         public final int cycles;
         public final Map<String,Integer> vars;
-        public RunResult(int y, int cycles, Map<String,Integer> vars) {
-            this.y = y; this.cycles = cycles; this.vars = vars == null ? Map.of() : vars;
+        public final List<TraceRow> trace;
+        public RunResult(String runId, int y, int cycles, Map<String,Integer> vars, List<TraceRow> trace) {
+            this.runId = runId; this.y = y; this.cycles = cycles; this.vars = vars; this.trace = trace;
         }
     }
 
     public static final class DebugState {
         public final String runId;
-        public final int cycles;
+        public final int pc, cycles;
+        public final boolean halted;
         public final Map<String,Integer> vars;
-        public final TraceRow current; // may be null
-        public DebugState(String runId, int cycles, Map<String,Integer> vars, TraceRow current) {
-            this.runId = runId; this.cycles = cycles; this.vars = vars == null ? Map.of() : vars; this.current = current;
+        public final TraceRow current;
+        public DebugState(String runId, int pc, int cycles, boolean halted,
+                          Map<String,Integer> vars, TraceRow current) {
+            this.runId = runId; this.pc = pc; this.cycles = cycles; this.halted = halted;
+            this.vars = vars; this.current = current;
         }
+    }
+
+    /* =================== High-level calls used by Controller =================== */
+
+    /** POST /api/login (form); returns credits as int. */
+    public int login(String username) throws IOException {
+        String url = base + "/api/login";
+        String body = postForm(url, Map.of("username", username));
+        // {"user":{"credits":1000,...},"ok":true}
+        return extractInt(body, "\"credits\"\\s*:\\s*(\\d+)", 1, 0);
+    }
+
+    /** POST /api/credits/charge (form) -> {"credits":1234} */
+    public int chargeCredits(int amount) throws IOException {
+        String url = base + "/api/credits/charge";
+        String body = postForm(url, Map.of("amount", String.valueOf(amount)));
+        return extractInt(body, "\"credits\"\\s*:\\s*(\\d+)", 1, 0);
+    }
+
+    /** POST multipart /api/programs/upload (file) -> {"ok":true,"program":{...}} */
+    public ProgramInfo uploadXml(Path xmlFile) throws IOException {
+        String url = base + "/api/programs/upload";
+        String json = postMultipart(url, "file", xmlFile);
+
+        String obj = extractObject(json, "\"program\"\\s*:\\s*\\{", "\\}");
+        String id     = extractString(obj, "\"id\"");
+        String name   = extractString(obj, "\"name\"");
+        int maxDeg    = extractInt(obj, "\"maxDegree\"\\s*:\\s*(\\d+)", 1, 0);
+        List<String> functions = extractStringArray(obj, "\"functions\"");
+
+        return new ProgramInfo(id, name, maxDeg, functions);
+    }
+
+    /** GET /api/programs -> {"programs":[{id,name,maxDegree,functions:[..]},...]} */
+    public List<ProgramInfo> listPrograms() throws IOException {
+        String url = base + "/api/programs";
+        String json = httpGet(url);
+
+        List<String> objs = splitTopLevelObjects(extractArray(json, "\"programs\""));
+        List<ProgramInfo> out = new ArrayList<>();
+        for (String p : objs) {
+            String id     = extractString(p, "\"id\"");
+            String name   = extractString(p, "\"name\"");
+            int maxDeg    = extractInt(p, "\"maxDegree\"\\s*:\\s*(\\d+)", 1, 0);
+            List<String> functions = extractStringArray(p, "\"functions\"");
+            out.add(new ProgramInfo(id, name, maxDeg, functions));
+        }
+        return out;
+    }
+
+    /** GET /api/programs/expand?programId=&function=&degree= */
+    public List<TraceRow> expand(String programId, String function, int degree) throws IOException {
+        String url = base + "/api/programs/expand?programId=" + enc(programId)
+                + "&function=" + enc(function)
+                + "&degree=" + degree;
+        String json = httpGet(url);
+        // {"rows":[{"index":1,"type":"B","label":"","instr":"...","cycles":1},...]}
+        List<String> rows = splitTopLevelObjects(extractArray(json, "\"rows\""));
+        List<TraceRow> out = new ArrayList<>();
+        for (String r : rows) {
+            int index = extractInt(r, "\"index\"\\s*:\\s*(\\d+)", 1, 0);
+            String type = extractString(r, "\"type\"");
+            String instr = extractString(r, "\"instr\"");
+            int cycles = extractInt(r, "\"cycles\"\\s*:\\s*(\\d+)", 1, 0);
+            out.add(new TraceRow(index, type, instr, cycles));
+        }
+        return out;
+    }
+
+    /** POST /api/runs/runOnce (form) -> RunResult */
+    public RunResult runOnce(String programId, String function, List<Integer> inputs, int degree, String arch) throws IOException {
+        // your API set doesn’t include a dedicated RunOnce servlet in the names,
+        // but we’ll use /api/runs/runOnce which EngineFacadeImpl supports.
+        // If your mapping is different, adjust ONLY this line’s path.
+        String url = base + "/api/runs/runOnce";
+
+        Map<String,String> params = new LinkedHashMap<>();
+        params.put("programId", programId);
+        params.put("function", function);
+        params.put("degree", String.valueOf(degree));
+        params.put("arch", arch == null ? "" : arch);
+        params.put("inputs", joinInts(inputs)); // e.g., "7,3"
+
+        String json = postForm(url, params);
+        // {"y":..,"cycles":..,"variables":{"y":..,"x1":..}, "trace":[{...}]}
+        String runId = extractString(json, "\"runId\"");
+        int y = extractInt(json, "\"y\"\\s*:\\s*(-?\\d+)", 1, 0);
+        int cycles = extractInt(json, "\"cycles\"\\s*:\\s*(\\d+)", 1, 0);
+        Map<String,Integer> vars = extractVars(json, "\"variables\"");
+        List<TraceRow> trace = extractTrace(json, "\"trace\"");
+        return new RunResult(runId, y, cycles, vars, trace);
+    }
+
+    /** POST /api/runs/start (form) -> Debug session + first state */
+    public DebugState startDebug(String programId, String function, List<Integer> inputs, int degree, String arch) throws IOException {
+        String url = base + "/api/runs/start";
+        Map<String,String> params = new LinkedHashMap<>();
+        params.put("programId", programId);
+        params.put("function", function);
+        params.put("degree", String.valueOf(degree));
+        params.put("arch", arch == null ? "" : arch);
+        params.put("inputs", joinInts(inputs));
+
+        String json = postForm(url, params);
+        return parseDebugState(json);
+    }
+
+    /** POST /api/runs/step (form runId) */
+    public DebugState step(String runId) throws IOException {
+        String json = postForm(base + "/api/runs/step", Map.of("runId", runId));
+        return parseDebugState(json);
+    }
+
+    /** POST /api/runs/resume (form runId) */
+    public DebugState resume(String runId) throws IOException {
+        String json = postForm(base + "/api/runs/resume", Map.of("runId", runId));
+        return parseDebugState(json);
+    }
+
+    /** POST /api/runs/stop (form runId) */
+    public DebugState stop(String runId) throws IOException {
+        String json = postForm(base + "/api/runs/stop", Map.of("runId", runId));
+        return parseDebugState(json);
+    }
+
+    /* =================== HTTP helpers =================== */
+
+    private static String enc(String s) {
+        try { return URLEncoder.encode(s, "UTF-8"); } catch (UnsupportedEncodingException e) { return s; }
+    }
+    private static String joinInts(List<Integer> xs) {
+        if (xs == null || xs.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i=0;i<xs.size();i++) { if (i>0) sb.append(','); sb.append(xs.get(i)); }
+        return sb.toString();
+    }
+
+    private String httpGet(String urlStr) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+        c.setRequestMethod("GET");
+        c.setDoInput(true);
+        try (InputStream in = c.getInputStream()) { return new String(in.readAllBytes()); }
+        catch (IOException e) {
+            InputStream err = c.getErrorStream();
+            String msg = (err != null) ? new String(err.readAllBytes()) : e.getMessage();
+            throw new IOException(urlStr + "\n" + msg, e);
+        }
+    }
+
+    private String postForm(String urlStr, Map<String,String> params) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+
+        StringBuilder body = new StringBuilder();
+        boolean first = true;
+        for (Map.Entry<String,String> e : params.entrySet()) {
+            if (!first) body.append('&'); first = false;
+            body.append(enc(e.getKey())).append('=').append(enc(e.getValue()==null?"":e.getValue()));
+        }
+
+        try (OutputStream out = c.getOutputStream()) { out.write(body.toString().getBytes()); }
+
+        try (InputStream in = c.getInputStream()) { return new String(in.readAllBytes()); }
+        catch (IOException e) {
+            InputStream err = c.getErrorStream();
+            String msg = (err != null) ? new String(err.readAllBytes()) : e.getMessage();
+            throw new IOException(urlStr + "\n" + msg, e);
+        }
+    }
+
+    private String postMultipart(String urlStr, String fieldName, Path file) throws IOException {
+        String boundary = "----SBoundary" + System.currentTimeMillis();
+        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+
+        try (OutputStream out = c.getOutputStream()) {
+            var w = new PrintWriter(new OutputStreamWriter(out, "UTF-8"), true);
+
+            w.append("--").append(boundary).append("\r\n");
+            w.append("Content-Disposition: form-data; name=\"").append(fieldName)
+                    .append("\"; filename=\"").append(file.getFileName().toString()).append("\"\r\n");
+            w.append("Content-Type: application/xml\r\n\r\n").flush();
+
+            Files.copy(file, out);
+            out.flush();
+
+            w.append("\r\n").flush();
+            w.append("--").append(boundary).append("--").append("\r\n").flush();
+        }
+
+        try (InputStream in = c.getInputStream()) { return new String(in.readAllBytes()); }
+        catch (IOException e) {
+            InputStream err = c.getErrorStream();
+            String msg = (err != null) ? new String(err.readAllBytes()) : e.getMessage();
+            throw new IOException(urlStr + "\n" + msg, e);
+        }
+    }
+
+    /* =================== Tiny JSON-ish parsing helpers =================== */
+
+    private static String extractObject(String text, String prefixRegex, String closing) {
+        Pattern p = Pattern.compile(prefixRegex);
+        Matcher m = p.matcher(text);
+        if (!m.find()) return "{}";
+        int start = m.end(); int depth = 1; int i = start;
+        for (; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch == '{') depth++;
+            else if (ch == '}') { depth--; if (depth == 0) break; }
+        }
+        return text.substring(start, Math.min(i, text.length()-1));
+    }
+    private static String extractArray(String text, String keyRegex) {
+        Pattern p = Pattern.compile(keyRegex + "\\s*:\\s*\\[");
+        Matcher m = p.matcher(text);
+        if (!m.find()) return "[]";
+        int start = m.end(); int depth = 1; int i = start;
+        for (; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch == '[') depth++;
+            else if (ch == ']') { depth--; if (depth == 0) break; }
+        }
+        return text.substring(start, Math.min(i, text.length()-1));
+    }
+    private static List<String> splitTopLevelObjects(String arrayInner) {
+        List<String> out = new ArrayList<>();
+        int depth = 0; int start = -1;
+        for (int i=0;i<arrayInner.length();i++) {
+            char ch = arrayInner.charAt(i);
+            if (ch == '{') { if (depth==0) start = i+1; depth++; }
+            else if (ch == '}') { depth--; if (depth==0 && start>=0) { out.add(arrayInner.substring(start-1, i+1)); start = -1; } }
+        }
+        return out;
+    }
+    private static String extractString(String text, String keyLiteralRegex) {
+        Pattern p = Pattern.compile(keyLiteralRegex + "\\s*:\\s*\"(.*?)\"");
+        Matcher m = p.matcher(text);
+        return m.find() ? m.group(1) : "";
+    }
+    private static int extractInt(String text, String regex, int group, int def) {
+        Pattern p = Pattern.compile(regex);
+        Matcher m = p.matcher(text);
+        return m.find() ? Integer.parseInt(m.group(group)) : def;
+    }
+    private static List<String> extractStringArray(String text, String keyLiteralRegex) {
+        String arr = extractArray(text, keyLiteralRegex);
+        List<String> out = new ArrayList<>();
+        Matcher m = Pattern.compile("\"(.*?)\"").matcher(arr);
+        while (m.find()) out.add(m.group(1));
+        return out;
+    }
+    private static Map<String,Integer> extractVars(String json, String keyLiteralRegex) {
+        String obj = extractObject(json, keyLiteralRegex + "\\s*:\\s*\\{", "}");
+        Map<String,Integer> out = new LinkedHashMap<>();
+        Matcher m = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(-?\\d+)").matcher(obj);
+        while (m.find()) out.put(m.group(1), Integer.parseInt(m.group(2)));
+        return out;
+    }
+    private static List<TraceRow> extractTrace(String json, String keyLiteralRegex) {
+        List<String> rows = splitTopLevelObjects(extractArray(json, keyLiteralRegex));
+        List<TraceRow> out = new ArrayList<>();
+        for (String r : rows) {
+            int index = extractInt(r, "\"index\"\\s*:\\s*(\\d+)", 1, 0);
+            String type = extractString(r, "\"type\"");
+            String instr = extractString(r, "\"instr\"");
+            int cycles = extractInt(r, "\"cycles\"\\s*:\\s*(\\d+)", 1, 0);
+            out.add(new TraceRow(index, type, instr, cycles));
+        }
+        return out;
+    }
+    private DebugState parseDebugState(String json) {
+        String runId = extractString(json, "\"runId\"");
+        int pc = extractInt(json, "\"pc\"\\s*:\\s*(\\d+)", 1, 0);
+        int cycles = extractInt(json, "\"cycles\"\\s*:\\s*(\\d+)", 1, 0);
+        boolean halted = json.contains("\"halted\"\\s*:\\s*true");
+        Map<String,Integer> vars = extractVars(json, "\"variables\"");
+        // Current row:
+        String curr = extractObject(json, "\"current\"\\s*:\\s*\\{", "}");
+        TraceRow tr = curr.isEmpty() ? null :
+                new TraceRow(
+                        extractInt(curr, "\"index\"\\s*:\\s*(\\d+)", 1, 0),
+                        extractString(curr, "\"type\""),
+                        extractString(curr, "\"instr\""),
+                        extractInt(curr, "\"cycles\"\\s*:\\s*(\\d+)", 1, 0)
+                );
+        return new DebugState(runId, pc, cycles, halted, vars, tr);
     }
 }

@@ -8,13 +8,22 @@
             fx:controller="gui.MainController"
             prefWidth="1280" prefHeight="800">
 
-    <!-- TOP BAR (shared look) -->
+    <!-- TOP BAR -->
     <top>
         <ToolBar styleClass="topbar">
-            <Hyperlink text="User Name" onAction="#showDashboard" styleClass="link-strong"/>
+            <!-- NEW: login controls -->
+            <HBox spacing="8" alignment="CENTER_LEFT">
+                <Label text="User:"/>
+                <TextField fx:id="userNameTextField" promptText="Enter username" prefWidth="160"/>
+                <Button text="Login" onAction="#onAddUserClick" styleClass="accent"/>
+            </HBox>
+
             <Pane HBox.hgrow="ALWAYS"/>
+
             <Label text="S-Emulator — Dashboard" fx:id="topTitle" styleClass="app-title"/>
+
             <Pane HBox.hgrow="ALWAYS"/>
+
             <Label text="Available Credits:"/>
             <Label fx:id="creditsValue" text="___" styleClass="badge"/>
         </ToolBar>
@@ -106,7 +115,7 @@
             <BorderPane fx:id="executionPane" visible="false" managed="false">
                 <top>
                     <ToolBar styleClass="topbar">
-                        <Hyperlink text="User Name" onAction="#switchToDashboard" styleClass="link-strong"/>
+                        <Hyperlink text="Dashboard" onAction="#switchToDashboard" styleClass="link-strong"/>
                         <Pane HBox.hgrow="ALWAYS"/>
                         <Label text="S-Emulator – Execution" styleClass="app-title"/>
                         <Pane HBox.hgrow="ALWAYS"/>
@@ -123,17 +132,16 @@
                             <ColumnConstraints percentWidth="32" hgrow="ALWAYS"/>
                         </columnConstraints>
 
-                        <!-- Left: Degree Commands banner + Highlight -->
+                        <!-- Left: banner + highlight -->
                         <HBox spacing="10" GridPane.columnIndex="0">
                             <Button text="Degree Commands and information" disable="true" styleClass="banner"/>
                             <Pane HBox.hgrow="ALWAYS"/>
                             <Button text="Highlight selection" onAction="#highlightSelection"/>
                         </HBox>
 
-                        <!-- Right: Debug header -->
                         <Label text="Debugger\\Execution" GridPane.columnIndex="1" styleClass="panel-title"/>
 
-                        <!-- Instructions table -->
+                        <!-- Instructions -->
                         <VBox spacing="8" GridPane.rowIndex="1" GridPane.columnIndex="0" styleClass="panel">
                             <Label text="Instructions table" styleClass="panel-subtitle"/>
                             <TableView fx:id="instructionsTable" VBox.vgrow="ALWAYS">
@@ -146,17 +154,16 @@
                                     <TableColumn fx:id="colArch" text="Architecture" prefWidth="140"/>
                                 </columns>
                             </TableView>
-
                             <TextField promptText="(advanced) Summary line" editable="false"/>
                         </VBox>
 
-                        <!-- Selected instruction history chain -->
+                        <!-- Lineage -->
                         <VBox spacing="8" GridPane.rowIndex="2" GridPane.columnIndex="0" styleClass="panel">
                             <Label text="Selected Instruction history chain" styleClass="panel-subtitle"/>
                             <TextArea fx:id="lineageArea" prefRowCount="6" wrapText="true"/>
                         </VBox>
 
-                        <!-- Right column: debugger, variables, inputs, cycles, back -->
+                        <!-- Right column -->
                         <VBox spacing="12" GridPane.rowIndex="1" GridPane.columnIndex="1">
                             <VBox spacing="8" styleClass="panel-yellow">
                                 <Label text="Debugger\\ Execution Commands:" styleClass="panel-subtitle"/>

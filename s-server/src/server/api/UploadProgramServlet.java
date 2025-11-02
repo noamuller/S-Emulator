@@ -7,97 +7,82 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.Part;
+
 import server.core.EngineFacade;
 import server.core.ProgramInfo;
-import server.core.SimpleJson;
 
-import java.io.*;
-import java.nio.file.Files;
-import java.util.Map;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
-@WebServlet("/api/programs/upload")
+@WebServlet(name = "UploadProgramServlet", urlPatterns = {"/api/programs/upload"})
 @MultipartConfig
 public class UploadProgramServlet extends HttpServlet {
 
     private EngineFacade facade(HttpServletRequest req) {
-        return (EngineFacade) getServletContext().getAttribute("facade");
+        return (EngineFacade) req.getServletContext().getAttribute("facade");
     }
 
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        resp.setCharacterEncoding("UTF-8");
+        resp.setContentType("application/json");
 
-        resp.setContentType("application/json;charset=UTF-8");
-        try (PrintWriter out = resp.getWriter()) {
-
-            Part filePart = req.getPart("file");
-            if (filePart == null || filePart.getSize() == 0) {
+        try {
+            String xml = readXmlFromRequest(req);
+            if (xml == null || xml.isBlank()) {
                 resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                SimpleJson.write(out, Map.of("ok", false, "error", "missing 'file' part"));
+                resp.getWriter().write("{\"ok\":false,\"error\":\"Missing XML\"}");
                 return;
             }
 
-            // Sanitize XML stream: strip UTF-8 BOM and any leading whitespace before '<'
-            File tmp = Files.createTempFile("program-", ".xml").toFile();
-            try (InputStream raw = filePart.getInputStream();
-                 OutputStream cleaned = new BufferedOutputStream(new FileOutputStream(tmp))) {
+            ProgramInfo info = facade(req).loadProgram(xml);
 
-                sanitizeXml(raw, cleaned); // <-- writes only clean XML to tmp
+            StringBuilder json = new StringBuilder();
+            json.append("{")
+                    .append("\"ok\":true,")
+                    .append("\"program\":{")
+                    .append("\"id\":\"").append(esc(info.id())).append("\",")
+                    .append("\"name\":\"").append(esc(info.name())).append("\",")
+                    .append("\"maxDegree\":").append(info.maxDegree()).append(",")
+                    .append("\"functions\":[");
+            for (int i = 0; i < info.functions().size(); i++) {
+                if (i > 0) json.append(',');
+                json.append("\"").append(esc(info.functions().get(i))).append("\"");
             }
+            json.append("]}")
+                    .append("}");
 
-            // Let the engine load & register program (your existing parser reads the File)
-            ProgramInfo info = facade(req).loadProgram(tmp.getAbsolutePath());
-
-
-            SimpleJson.write(out, Map.of("ok", true, "program", Map.of(
-                    "id", info.id(),
-                    "name", info.name(),
-                    "maxDegree", info.maxDegree()
-            )));
+            resp.getWriter().write(json.toString());
 
         } catch (Exception e) {
-            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            try (PrintWriter out = resp.getWriter()) {
-                SimpleJson.write(out, Map.of("ok", false, "error", e.getMessage()));
-            }
+            resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            resp.getWriter().write("{\"ok\":false,\"error\":\"" + esc(msg) + "\"}");
         }
     }
 
-    /**
-     * Copy XML from 'in' to 'out', removing a UTF-8 BOM if present and
-     * skipping any leading whitespace/newlines before the first '<'.
-     */
-    private static void sanitizeXml(InputStream in, OutputStream out) throws IOException {
-        PushbackInputStream pin = new PushbackInputStream(new BufferedInputStream(in), 3);
-
-        // Strip UTF-8 BOM if present (EF BB BF)
-        byte[] bom = new byte[3];
-        int n = pin.read(bom, 0, 3);
-        boolean hasBom = (n == 3 && (bom[0] & 0xFF) == 0xEF && (bom[1] & 0xFF) == 0xBB && (bom[2] & 0xFF) == 0xBF);
-        if (!hasBom) {
-            if (n > 0) pin.unread(bom, 0, n);
-        }
-
-        // Skip any leading whitespace before first '<'
-        int b;
-        while ((b = pin.read()) != -1) {
-            if (!Character.isWhitespace(b)) {
-                if (b != '<') {
-                    // If the very first non-space isn't '<', push it back anyway so parser errors clearly
-                    pin.unread(b);
-                } else {
-                    out.write('<');
-                }
-                break;
+    private static String readXmlFromRequest(HttpServletRequest req) throws Exception {
+        String ct = req.getContentType();
+        if (ct != null && ct.toLowerCase().contains("multipart/")) {
+            Part part = req.getPart("file");
+            if (part == null) return null;
+            try (InputStream in = part.getInputStream()) {
+                return new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
         }
-
-        // Copy the rest
-        byte[] buf = new byte[8192];
-        int r;
-        while ((r = pin.read(buf)) != -1) {
-            out.write(buf, 0, r);
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(req.getInputStream(), StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line).append('\n');
+            return sb.toString();
         }
-        out.flush();
+    }
+
+    private static String esc(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

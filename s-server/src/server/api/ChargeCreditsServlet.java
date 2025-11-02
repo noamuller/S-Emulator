@@ -1,34 +1,60 @@
 package server.api;
 
+import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import java.io.IOException;
-import java.util.Map;
-import java.util.stream.Collectors;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
-import server.core.SimpleJson;
 
-@WebServlet("/api/charge-credits")
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+
+@WebServlet(urlPatterns = "/api/credits/charge")
 public class ChargeCreditsServlet extends HttpServlet {
 
-    private EngineFacade facade() {
-        Object f = getServletContext().getAttribute("facade");
-        if (f instanceof EngineFacade ef) return ef;
-        throw new IllegalStateException("EngineFacade not initialized; check Bootstrap");
+    private EngineFacade facade(HttpServletRequest req) {
+        return (EngineFacade) req.getServletContext().getAttribute("facade");
     }
 
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        var body = SimpleJson.parse(req.getReader().lines().collect(Collectors.joining()));
-        String userId = String.valueOf(body.get("userId"));
-        int amount = ((Number) body.getOrDefault("amount", 0)).intValue();
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
+
+        resp.setCharacterEncoding("UTF-8");
+        resp.setContentType("application/json");
 
         try {
-            var cs = facade().chargeCredits(userId, amount);
-            SimpleJson.write(resp.getWriter(), Map.of("userId", cs.userId(), "credits", cs.credits()));
-        } catch (Exception ex) {
-            resp.setStatus(400);
-            SimpleJson.write(resp.getWriter(), Map.of("error", ex.getMessage()));
+            // who is logged in?
+            String userId = (String) req.getSession(true).getAttribute("userId");
+            if (userId == null || userId.isBlank()) {
+                resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                resp.getWriter().write("{\"ok\":false,\"error\":\"not logged in\"}");
+                return;
+            }
+
+            // amount
+            String s = req.getParameter("amount");
+            int amount = (s == null || s.isBlank()) ? 0 : Integer.parseInt(s.trim());
+            if (amount <= 0) {
+                resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                resp.getWriter().write("{\"ok\":false,\"error\":\"amount must be > 0\"}");
+                return;
+            }
+
+            var cs = facade(req).chargeCredits(userId, amount);
+            String json = new StringBuilder()
+                    .append("{\"ok\":true,")
+                    .append("\"credits\":").append(cs.credits())
+                    .append("}")
+                    .toString();
+
+            resp.getOutputStream().write(json.getBytes(StandardCharsets.UTF_8));
+
+        } catch (Exception e) {
+            resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            String msg = e.getMessage() == null ? "error" : e.getMessage().replace("\"","\\\"");
+            resp.getWriter().write("{\"ok\":false,\"error\":\"" + msg + "\"}");
         }
     }
 }
