@@ -32,3 +32,18 @@
 .table-view { -fx-padding: 2; }
 .table-view .column-header .label { -fx-font-weight: bold; }
 .table-row-cell:odd { -fx-background-color: rgba(0,0,0,0.02); }
+/* Table row striping (safe contrast) */
+.table-row-cell:even {
+    -fx-background-color: derive(-fx-control-inner-background, -2%);
+}
+.table-row-cell:odd {
+    -fx-background-color: derive(-fx-control-inner-background, 4%);
+}
+
+/* Always show readable text on selection */
+.table-row-cell:filled:selected {
+    -fx-background-color: -fx-selection-bar;
+}
+.table-row-cell:filled:selected .text {
+    -fx-fill: -fx-selection-bar-text; /* usually white on blue */
+}

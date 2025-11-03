@@ -60,7 +60,7 @@
                                 </columns>
                             </TableView>
                             <HBox alignment="CENTER_LEFT" spacing="10">
-                                <Button text="Unselect User" onAction="#logoutUser" styleClass="accent"/>
+                                <Button text="Unselect User" onAction="#onUnselectUser" styleClass="accent"/>
                             </HBox>
                         </VBox>
 
