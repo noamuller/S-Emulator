@@ -119,7 +119,6 @@ public final class Debugger {
             return snapshotChanged();
         }
 
-
         if ((m = RX_JEF.matcher(text)).matches()) {
             String v = m.group(1);
             String expr = m.group(2);
@@ -128,7 +127,6 @@ public final class Debugger {
             if (get(v) == val) jump(target); else pc++;
             return snapshotChanged();
         }
-
 
         pc++;
         return snapshotChanged();
@@ -159,8 +157,6 @@ public final class Debugger {
     private static LinkedHashMap<String,Integer> copy(LinkedHashMap<String,Integer> m) {
         return new LinkedHashMap<>(m);
     }
-
-
 
     private static final Pattern RX_CALL = Pattern.compile("^([A-Za-z][A-Za-z0-9_]*)\\((.*)\\)$");
 

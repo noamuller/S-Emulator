@@ -170,7 +170,6 @@ public final class SimpleJson {
                         case 'r': sb.append('\r'); break;
                         case 't': sb.append('\t'); break;
                         case 'u': {
-                            // substring version works on all JDKs
                             String hex = s.substring(i, Math.min(i+4, n));
                             int code = Integer.parseInt(hex, 16);
                             sb.append((char) code);
@@ -209,7 +208,6 @@ public final class SimpleJson {
                 if (L >= Integer.MIN_VALUE && L <= Integer.MAX_VALUE) return (int)L;
                 return L;
             } catch (NumberFormatException e) {
-                // bare word fallback -> return as String, which is fine (caller expects Object)
                 return token;
             }
         }

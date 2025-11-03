@@ -48,7 +48,6 @@ public class MainController {
     @FXML private TextArea resultsArea, variablesArea, lineageArea;
     @FXML private TextField cyclesField;
 
-    // >>> If your Tomcat context is "/" change this to "http://localhost:8080"
     private final EngineAdapter api = new EngineAdapter("http://localhost:8080/s-server");
 
     private EngineAdapter.ProgramInfo currentProgram = null;

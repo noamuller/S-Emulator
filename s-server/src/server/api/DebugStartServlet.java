@@ -37,7 +37,6 @@ public class DebugStartServlet extends HttpServlet {
             try {
                 out.add(Integer.parseInt(p));
             } catch (NumberFormatException ignore) {
-                // invalid number -> treat as 0
                 out.add(0);
             }
         }
@@ -70,7 +69,6 @@ public class DebugStartServlet extends HttpServlet {
 
         List<Integer> inputs = parseInputs(inputsStr);
 
-        // For תרגיל 3 we can pass null as userId for debug
         EngineFacade.DebugSession session =
                 facade().startDebug(null, programId, function, inputs, degree, arch);
 

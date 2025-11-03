@@ -85,17 +85,14 @@ public final class Program {
                     first = false;
                 }
             } else if (expanded != null) {
-                // (paranoid) expansion returned empty list — nothing to emit
                 chains.add(List.of(renderOriginLine(ins)));
             } else {
-                // Not synthetic → force to BASIC
                 Instruction b = asBasic(ins);
                 out.add(b);
                 chains.add(List.of(renderOriginLine(ins)));
             }
         }
 
-        // ---- COSMETIC FIX for divide degree=1: y <- y - 1 (UI parity with degree 0) ----
         if (name != null && name.equalsIgnoreCase("divide") && d == 1) {
             Instruction fix = Instruction.parseFromText(null, "y <- y - 1", "B", 1);
             out.add(fix);
@@ -424,7 +421,7 @@ public final class Program {
 
     private static final class Scratch {
         private int zCounter = 1;
-        private int nextLabelBase = 1000; // grows by 1000 each call frame
+        private int nextLabelBase = 1000;
 
         int nextZ() { return zCounter++; }
 

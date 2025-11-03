@@ -4,30 +4,24 @@ import java.util.List;
 import java.util.Map;
 
 public interface EngineFacade {
-    // Programs
     ProgramInfo loadProgram(String xmlText);
     List<TraceRow> expand(String programId, String function, int degree);
 
-    // Runs (regular)
     RunResult run(String userId, String programId, String function,
                   List<Integer> inputs, int degree, String architecture);
 
-    // Debug
     DebugSession startDebug(String userId, String programId, String function,
                             List<Integer> inputs, int degree, String architecture);
-    DebugState status(String runId);   // ← NEW: read-only snapshot
+    DebugState status(String runId);
     DebugState step(String runId);
     DebugState resume(String runId);
     DebugState stop(String runId);
 
-    // Credits
     CreditsState getCredits(String userId);
     CreditsState chargeCredits(String userId, int amount);
 
-    // History
     List<HistoryRow> history(String userId);
 
-    // ===== DTOs =====
     record TraceRow(int index, String type, String label, String instr, int cycles) {}
     record RunResult(String runId, int y, int cycles,
                      Map<String,Integer> variables, List<TraceRow> trace) {}

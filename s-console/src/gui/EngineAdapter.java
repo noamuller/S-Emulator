@@ -9,11 +9,6 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * HTTP client for S-Server (API-first).
- * Uses only /api/... endpoints to avoid legacy path confusion.
- * Keeps session cookies; tolerant parsing; better error surfacing.
- */
 public class EngineAdapter {
 
     /* ===================== DTOs ===================== */
@@ -69,7 +64,7 @@ public class EngineAdapter {
 
     /* ===================== Core ===================== */
 
-    private final String base; // e.g. http://localhost:8080/s-server
+    private final String base;
 
     static {
         CookieManager cm = new CookieManager();
@@ -78,18 +73,16 @@ public class EngineAdapter {
     }
 
     public EngineAdapter(String baseUrl) {
-        // strip trailing slash to normalize
         this.base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length()-1) : baseUrl;
     }
 
-    private String api(String path) { // ensure single slash
+    private String api(String path) {
         return base + (path.startsWith("/") ? "" : "/") + path;
     }
 
     /* ===================== Users ===================== */
 
     public UserDto loginAny(String username) throws IOException {
-        // Only /api variants
         String[][] tries = {
                 { "/api/users/loginFull", "name" },
                 { "/api/users/loginFull", "username" },
@@ -158,12 +151,12 @@ public class EngineAdapter {
         String[] paths = {
                 "/api/programs/upload",
                 "/api/programs/load",
-                "/api/programs" // some servers POST-create
+                "/api/programs"
         };
 
         IOException last = null;
 
-        // multipart first
+
         for (String p : paths) {
             String url = api(p);
             try {
@@ -173,7 +166,7 @@ public class EngineAdapter {
             } catch (FileNotFoundException nf) { last = nf; }
             catch (IOException ioe)         { last = ioe; }
         }
-        // urlencoded fallbacks
+
         for (String p : paths) {
             String url = api(p);
             for (String key : new String[]{"xml","text","content","programXml"}) {
@@ -323,7 +316,6 @@ public class EngineAdapter {
     private static List<TraceRow> parseTraceRows(String json) {
         List<TraceRow> rows = new ArrayList<>();
 
-        // Find the "rows": [ ... ] part
         java.util.regex.Pattern rowsPattern =
                 java.util.regex.Pattern.compile("\"rows\"\\s*:\\s*\\[(.*?)]", java.util.regex.Pattern.DOTALL);
         java.util.regex.Matcher rowsMatcher = rowsPattern.matcher(json);
@@ -332,7 +324,6 @@ public class EngineAdapter {
         }
         String inner = rowsMatcher.group(1);
 
-        // Each row is an object { ... }
         java.util.regex.Pattern objPattern =
                 java.util.regex.Pattern.compile("\\{([^}]*)}", java.util.regex.Pattern.DOTALL);
         java.util.regex.Matcher rowMatcher = objPattern.matcher(inner);
@@ -340,7 +331,6 @@ public class EngineAdapter {
         while (rowMatcher.find()) {
             String r = rowMatcher.group(1);
 
-            // index
             int index = 0;
             java.util.regex.Matcher mIndex =
                     java.util.regex.Pattern.compile("\"index\"\\s*:\\s*(\\d+)").matcher(r);
@@ -351,7 +341,6 @@ public class EngineAdapter {
                 }
             }
 
-            // type
             String type = "";
             java.util.regex.Matcher mType =
                     java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(r);
@@ -359,7 +348,6 @@ public class EngineAdapter {
                 type = mType.group(1);
             }
 
-            // instruction text: "text" (old) OR "instr" (new)
             String text = "";
             java.util.regex.Matcher mText =
                     java.util.regex.Pattern.compile("\"text\"\\s*:\\s*\"([^\"]*)\"").matcher(r);
@@ -373,7 +361,7 @@ public class EngineAdapter {
                 }
             }
 
-            // cycles
+
             int cycles = 0;
             java.util.regex.Matcher mCycles =
                     java.util.regex.Pattern.compile("\"cycles\"\\s*:\\s*(\\d+)").matcher(r);
@@ -386,11 +374,8 @@ public class EngineAdapter {
 
             rows.add(new TraceRow(index, type, text, cycles));
         }
-
         return rows;
     }
-
-
 
     private static String joinInts(List<Integer> xs) {
         if (xs == null || xs.isEmpty()) return "";

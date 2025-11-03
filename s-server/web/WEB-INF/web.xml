@@ -5,5 +5,5 @@
          version="5.0">
 
     <display-name>s-server</display-name>
-    <!-- Intentionally empty: all servlets/listeners are discovered via annotations (@WebServlet/@WebListener) -->
+
 </web-app>

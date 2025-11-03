@@ -19,7 +19,6 @@ public class ListProgramsServlet extends HttpServlet {
         resp.setCharacterEncoding("UTF-8");
         resp.setContentType("application/json");
 
-        // Pull directly from the in-memory store (no EngineFacade dependency).
         List<ProgramInfo> list = ProgramStore.get().list();
 
         StringBuilder sb = new StringBuilder();

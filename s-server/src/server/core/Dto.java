@@ -13,7 +13,7 @@ public final class Dto {
 
     public static final class FunctionSummary {
         public String name;
-        public String userString; // e.g. "f(x1,x2)->y"
+        public String userString;
     }
 
     public static final class UserSummary {
@@ -28,12 +28,12 @@ public final class Dto {
         public String functionName;
         public int degree;
         public List<Integer> inputs;
-        public String mode; // "regular" | "debug"
+        public String mode;
     }
 
     public static final class RunStatus {
         public long runId;
-        public String state;             // NEW|RUNNING|DEBUG|PAUSED|STOPPED|DONE
+        public String state;
         public int pc;
         public String currentInstruction;
         public int cycles;

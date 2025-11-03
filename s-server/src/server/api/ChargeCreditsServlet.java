@@ -25,7 +25,6 @@ public class ChargeCreditsServlet extends HttpServlet {
         resp.setContentType("application/json");
 
         try {
-            // who is logged in?
             String userId = (String) req.getSession(true).getAttribute("userId");
             if (userId == null || userId.isBlank()) {
                 resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
@@ -33,7 +32,6 @@ public class ChargeCreditsServlet extends HttpServlet {
                 return;
             }
 
-            // amount
             String s = req.getParameter("amount");
             int amount = (s == null || s.isBlank()) ? 0 : Integer.parseInt(s.trim());
             if (amount <= 0) {

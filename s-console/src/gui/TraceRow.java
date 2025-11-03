@@ -1,6 +1,5 @@
 package gui;
 
-/** Single row in the instructions table. */
 public class TraceRow {
     private final int index;
     private final String type;
@@ -16,14 +15,12 @@ public class TraceRow {
         this.cycles = cycles;
     }
 
-    // JavaFX getters
     public int getIndex() { return index; }
     public String getType() { return type; }
     public String getLabel() { return label; }
     public String getInstr() { return instr; }
     public int getCycles() { return cycles; }
 
-    // Aliases if your cell value factories call these names
     public int index() { return index; }
     public String type() { return type; }
     public String label() { return label; }

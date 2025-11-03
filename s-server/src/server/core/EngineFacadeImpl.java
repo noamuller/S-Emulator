@@ -113,7 +113,6 @@ public final class EngineFacadeImpl implements EngineFacade {
         Debugger dbg = runs.getDebugger(runId);
         if (dbg == null) return new DebugState(runId, -1, 0, true, Map.of(), null);
 
-        // Your Debugger has no resume(); loop steps until halted.
         Debugger.Snapshot s = dbg.snapshot();
         while (!s.halted) {
             s = dbg.step();

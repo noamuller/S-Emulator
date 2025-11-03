@@ -28,10 +28,8 @@ public final class Runner {
         degree = Math.max(0, Math.min(degree, program.maxDegree()));
         Program.Rendered r = program.expandToDegree(degree);
 
-        // Variables map (LinkedHashMap so we keep a nice display order)
         LinkedHashMap<String,Integer> vars = new LinkedHashMap<>();
         vars.put("y", 0);
-        // preload inputs: x1, x2, ...
         if (inputs != null) {
             for (int i = 0; i < inputs.size(); i++) {
                 vars.put("x" + (i + 1), Math.max(0, inputs.get(i)));
@@ -57,7 +55,6 @@ public final class Runner {
 
             cycles += Math.max(0, inst.cycles());
 
-            //GOTO EXIT/GOTO Lk
             Matcher m;
             if ((m = RX_GOTO.matcher(text)).matches()) {
                 String target = m.group(1).toUpperCase(Locale.ROOT);
@@ -68,7 +65,6 @@ public final class Runner {
                 continue;
             }
 
-            //2- IF <var> == 0
             if ((m = RX_IF_EQ_ZERO.matcher(text)).matches()) {
                 String v = m.group(1);
                 String target = m.group(2);
@@ -84,7 +80,6 @@ public final class Runner {
                 }
             }
 
-            //3- IF <var> != 0
             if ((m = RX_IF_NE_ZERO.matcher(text)).matches()) {
                 String v = m.group(1);
                 String target = m.group(2);
@@ -100,7 +95,6 @@ public final class Runner {
                 }
             }
 
-            //4- IF <varA> == <varB>
             if ((m = RX_IF_EQ_VAR.matcher(text)).matches()) {
                 String a = m.group(1);
                 String b = m.group(2);
@@ -117,7 +111,6 @@ public final class Runner {
                 }
             }
 
-            //5 IF <var> == CONST
             if ((m = RX_IF_EQ_CONST.matcher(text)).matches()) {
                 String a = m.group(1);
                 int c = Integer.parseInt(m.group(2));
@@ -134,7 +127,6 @@ public final class Runner {
                 }
             }
 
-            //6 dst <- dst + 1
             if ((m = RX_INC.matcher(text)).matches()) {
                 String dst = m.group(1);
                 set(vars, dst, get(vars, dst) + 1);
@@ -142,7 +134,6 @@ public final class Runner {
                 continue;
             }
 
-            //7 dst <- dst - 1
             if ((m = RX_DEC.matcher(text)).matches()) {
                 String dst = m.group(1);
                 set(vars, dst, Math.max(0, get(vars, dst) - 1));
@@ -150,7 +141,6 @@ public final class Runner {
                 continue;
             }
 
-            //8 dst <- src
             if ((m = RX_ASSIGN_VAR.matcher(text)).matches()) {
                 String dst = m.group(1);
                 String src = m.group(2);
@@ -159,7 +149,6 @@ public final class Runner {
                 continue;
             }
 
-            //9 dst <- CONST
             if ((m = RX_ASSIGN_CONST.matcher(text)).matches()) {
                 String dst = m.group(1);
                 int c = Integer.parseInt(m.group(2));
@@ -168,22 +157,18 @@ public final class Runner {
                 continue;
             }
 
-            //10 dst <- 0
             if ((m = RX_ZERO.matcher(text)).matches()) {
                 String dst = m.group(1);
                 set(vars, dst, 0);
                 pc++;
                 continue;
             }
-
-
             pc++;
         }
 
         return new RunResult(r, degree, cycles, vars);
     }
 
-    //variable shot store
     private static int get(Map<String,Integer> vars, String name) {
         return vars.getOrDefault(name, 0);
     }

@@ -50,7 +50,7 @@ public final class ProgramParser {
 
         List<Instruction> list = new ArrayList<>();
         for (Element e : children(instrWrap, "instruction")) {
-            String type = attrOr(e, "type", "B"); // "B" or "S"
+            String type = attrOr(e, "type", "B");
             String label = textOfOptional(e, "label");
             String command = textOfRequired(e, "command");
             Integer cycles = parseIntOrNull(textOfOptional(e, "cycles"));
@@ -66,7 +66,6 @@ public final class ProgramParser {
         Element sInstrWrap = firstChild(root, "S-Instructions");
         if (sInstrWrap == null) throw new IllegalArgumentException("Missing <S-Instructions>");
 
-        //get function names
         Set<String> definedFnNames = collectFunctionNames(root);
         definedFnNames.addAll(Arrays.asList(
                 "CONST", "NOT", "EQUAL", "AND", "OR",
@@ -111,7 +110,6 @@ public final class ProgramParser {
                 continue;
             }
 
-            //dst <- const
             if (eq(type, "CONSTANT_ASSIGNMENT")) {
                 String dst = textOfRequired(e, "S-Variable");
                 Element args = firstChild(e, "S-Instruction-Arguments");
@@ -129,7 +127,6 @@ public final class ProgramParser {
                 continue;
             }
 
-            //dst <- 0
             if (eq(type, "ZERO_VARIABLE")) {
                 String dst = textOfRequired(e, "S-Variable");
                 out.add(Instruction.parseFromText(label, dst + " <- 0", "B", 1));
@@ -190,14 +187,9 @@ public final class ProgramParser {
             out.add(Instruction.parseFromText(label, type, "S", 1));
         }
 
-        //build the functions library and attach to Program
         Map<String, List<Instruction>> functions = parseFunctions(root);
         return new Program(name, out, functions);
     }
-
-
-    //parse <S-Functions> into program functions
-
 
 
     private static Map<String, List<Instruction>> parseFunctions(Element root) {
@@ -222,8 +214,6 @@ public final class ProgramParser {
             for (Element e : children(body, "S-Instruction")) {
                 String label = readOptionalLabel(e);
                 String type = attrOr(e, "name", "");
-
-                //basic/synthetic forms to text commands:
 
                 if (eq(type, "ASSIGNMENT")) {
                     String dst = textOfRequired(e, "S-Variable");
@@ -334,17 +324,12 @@ public final class ProgramParser {
         return fnMap;
     }
 
-
-    //builders for synthetic instructions
-
-
-
     private static Instruction buildQuoteSynthetic(Element root, Element e, String label, Set<String> definedFnNames) {
         String dst = textOfRequired(e, "S-Variable");
 
         Element argsWrap = firstChild(e, "S-Instruction-Arguments");
         String fnName = null;
-        String fnArgs = ""; // e.g. "(Successor,x1)" or "x1,x2"
+        String fnArgs = "";
         if (argsWrap != null) {
             for (Element a : children(argsWrap, "S-Instruction-Argument")) {
                 String n = attrOr(a, "name", "");
@@ -451,7 +436,6 @@ public final class ProgramParser {
             String type = attrOr(one, "name", "");
             if (!eq(type, "CONSTANT_ASSIGNMENT")) return null;
 
-            // ensure the constant is applied to y
             String dst = textOfRequired(one, "S-Variable");
             if (!"y".equals(dst)) return null;
 

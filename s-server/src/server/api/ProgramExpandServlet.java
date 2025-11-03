@@ -36,14 +36,12 @@ public class ProgramExpandServlet extends HttpServlet {
             try {
                 degree = Integer.parseInt(degreeParam.trim());
             } catch (NumberFormatException ignored) {
-                // keep degree = 0
             }
         }
 
         try {
             List<EngineFacade.TraceRow> rows = facade(req).expand(programId, function, degree);
 
-            // Build JSON-friendly rows: list of maps
             List<Map<String, Object>> rowsJson = new ArrayList<>();
             for (EngineFacade.TraceRow r : rows) {
                 rowsJson.add(Map.of(

@@ -5,7 +5,6 @@ import sengine.Debugger;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Keeps live debug sessions and per-user history. */
 public final class RunManager {
     private final Map<String, Debugger> debuggers = new ConcurrentHashMap<>();
     private final Map<String, List<EngineFacade.HistoryRow>> historyByUser = new ConcurrentHashMap<>();

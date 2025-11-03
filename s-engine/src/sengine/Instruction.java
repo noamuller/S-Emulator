@@ -144,7 +144,7 @@ public abstract class Instruction {
         @Override public List<Instruction> expand() { return List.of(this); }
     }
     static final class IfNzGoto extends Instruction {
-        final VariableRef v; final String target; // EXIT or Lxx
+        final VariableRef v; final String target;
         IfNzGoto(String label, String text, int declaredCycles, VariableRef v, String target) { super(label, text, true, declaredCycles, null); this.v=v; this.target=target; }
         @Override public int cycles() { return declaredCycles > 0 ? declaredCycles : 2; }
         @Override public List<Instruction> expand() { return List.of(this); }

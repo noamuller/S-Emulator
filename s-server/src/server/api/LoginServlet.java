@@ -17,7 +17,6 @@ public class LoginServlet extends HttpServlet {
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        // Accept both "username" and "user"
         String username = req.getParameter("username");
         if (username == null || username.isBlank()) {
             username = req.getParameter("user");
@@ -36,10 +35,8 @@ public class LoginServlet extends HttpServlet {
 
         UserStore store = UserStore.get();
 
-        // 🔒 NEW: forbid logging in with the same username twice
         User existing = store.getByName(username);
         if (existing != null) {
-            // IMPORTANT: keep HTTP 200 so the GUI can read the JSON and show the error nicely
             SimpleJson.write(resp.getWriter(), Map.of(
                     "ok", false,
                     "error", "user '" + username + "' is already logged in"
@@ -47,16 +44,13 @@ public class LoginServlet extends HttpServlet {
             return;
         }
 
-        // Create a new user with initial credits
         User user = store.getOrCreate(username);
 
-        // Store BOTH for compatibility: string id (what other code expects) and the int
         HttpSession session = req.getSession(true);
-        session.setAttribute("userId", String.valueOf(user.getId())); // String
-        session.setAttribute("userIdInt", user.getId());              // Integer
+        session.setAttribute("userId", String.valueOf(user.getId()));
+        session.setAttribute("userIdInt", user.getId());
         session.setAttribute("username", user.getUsername());
 
-        // Response JSON: the GUI's EngineAdapter.loginAny() parses these fields
         SimpleJson.write(resp.getWriter(), Map.of(
                 "ok", true,
                 "user", Map.of(

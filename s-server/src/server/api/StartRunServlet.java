@@ -22,17 +22,13 @@ public class StartRunServlet extends HttpServlet {
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         resp.setContentType("application/json; charset=UTF-8");
 
-        // --- 1) Read request body: JSON OR form (x-www-form-urlencoded) ---
         Map<String, Object> body;
         String ct = req.getContentType();
         if (ct != null && ct.toLowerCase().contains("application/json")) {
-            // JSON body (e.g. from Postman)
             body = SimpleJson.parse(req.getReader().lines().collect(Collectors.joining()));
         } else {
-            // Form body (what EngineAdapter.runOnce sends: /api/runs/start)
             body = new LinkedHashMap<>();
 
-            // userId from session (for history & credits per user)
             HttpSession session = req.getSession(false);
             if (session != null) {
                 Object uid = session.getAttribute("userId");
@@ -41,7 +37,6 @@ public class StartRunServlet extends HttpServlet {
                 }
             }
 
-            // Basic fields
             body.put("programId", req.getParameter("programId"));
             body.put("function", req.getParameter("function"));
 
@@ -50,7 +45,6 @@ public class StartRunServlet extends HttpServlet {
                 try {
                     body.put("degree", Integer.parseInt(degreeStr.trim()));
                 } catch (NumberFormatException ignore) {
-                    // leave degree out; will default to 0 below
                 }
             }
 
@@ -68,7 +62,6 @@ public class StartRunServlet extends HttpServlet {
                         try {
                             inputs.add(Integer.parseInt(t));
                         } catch (NumberFormatException ignore) {
-                            // skip bad input tokens
                         }
                     }
                 }
@@ -76,7 +69,6 @@ public class StartRunServlet extends HttpServlet {
             }
         }
 
-        // --- 2) Extract parameters from the combined map (same as before, but tolerant) ---
         String userId = body.get("userId") == null ? null : String.valueOf(body.get("userId"));
         String programId = body.get("programId") == null ? null : String.valueOf(body.get("programId"));
         String function = body.get("function") == null ? "(main)" : String.valueOf(body.get("function"));
@@ -112,7 +104,6 @@ public class StartRunServlet extends HttpServlet {
             return;
         }
 
-        // --- 3) Call engine and send response (same logic as before) ---
         try {
             var rr = facade().run(userId, programId, function, inputs, degree, arch);
 

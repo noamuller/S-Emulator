@@ -16,13 +16,11 @@ public class ProgramInfo {
         this.maxDegree = maxDegree;
     }
 
-    // Getters (JavaFX/table-friendly)
     public String getId() { return id; }
     public String getName() { return name; }
     public List<String> getFunctions() { return functions; }
     public int getMaxDegree() { return maxDegree; }
 
-    // Also expose simple accessors if your bindings use method refs
     public String id() { return id; }
     public String name() { return name; }
     public List<String> functionsList() { return functions; }
