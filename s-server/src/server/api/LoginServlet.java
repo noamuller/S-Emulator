@@ -32,18 +32,35 @@ public class LoginServlet extends HttpServlet {
             return;
         }
 
-        User user = UserStore.get().getOrCreate(username);
+        username = username.trim();
+
+        UserStore store = UserStore.get();
+
+        // 🔒 NEW: forbid logging in with the same username twice
+        User existing = store.getByName(username);
+        if (existing != null) {
+            // IMPORTANT: keep HTTP 200 so the GUI can read the JSON and show the error nicely
+            SimpleJson.write(resp.getWriter(), Map.of(
+                    "ok", false,
+                    "error", "user '" + username + "' is already logged in"
+            ));
+            return;
+        }
+
+        // Create a new user with initial credits
+        User user = store.getOrCreate(username);
 
         // Store BOTH for compatibility: string id (what other code expects) and the int
         HttpSession session = req.getSession(true);
-        session.setAttribute("userId", String.valueOf(user.getId())); // <- String
-        session.setAttribute("userIdInt", user.getId());              // <- Integer
+        session.setAttribute("userId", String.valueOf(user.getId())); // String
+        session.setAttribute("userIdInt", user.getId());              // Integer
         session.setAttribute("username", user.getUsername());
 
+        // Response JSON: the GUI's EngineAdapter.loginAny() parses these fields
         SimpleJson.write(resp.getWriter(), Map.of(
                 "ok", true,
                 "user", Map.of(
-                        "id", user.getId(),                 // int in response
+                        "id", user.getId(),
                         "username", user.getUsername(),
                         "credits", user.getCredits()
                 )

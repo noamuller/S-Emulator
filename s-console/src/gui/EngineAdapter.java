@@ -320,26 +320,77 @@ public class EngineAdapter {
         return new ProgramInfo(name, id, maxDeg, fns);
     }
 
-    private List<TraceRow> parseTraceRows(String json) {
-        String inner;
-        Matcher wrap = Pattern.compile("\"rows\"\\s*:\\s*\\[(.*)]", Pattern.DOTALL).matcher(json);
-        if (wrap.find()) inner = wrap.group(1);
-        else {
-            Matcher only = Pattern.compile("^\\s*\\[(.*)]\\s*$", Pattern.DOTALL).matcher(json);
-            inner = only.find() ? only.group(1) : "";
+    private static List<TraceRow> parseTraceRows(String json) {
+        List<TraceRow> rows = new ArrayList<>();
+
+        // Find the "rows": [ ... ] part
+        java.util.regex.Pattern rowsPattern =
+                java.util.regex.Pattern.compile("\"rows\"\\s*:\\s*\\[(.*?)]", java.util.regex.Pattern.DOTALL);
+        java.util.regex.Matcher rowsMatcher = rowsPattern.matcher(json);
+        if (!rowsMatcher.find()) {
+            return rows;
         }
-        ArrayList<TraceRow> rows = new ArrayList<>();
-        Matcher row = Pattern.compile("\\{([^}]*)}").matcher(inner);
-        while (row.find()) {
-            String r = row.group(1);
-            int idx = extractInt(r, "\"index\"\\s*:\\s*(\\d+)", 1, rows.size()+1);
-            String type = first(extract(r, "\"type\"\\s*:\\s*\"([^\"]+)\""), "");
-            String text = first(extract(r, "\"text\"\\s*:\\s*\"([^\"]*)\""), "");
-            int cyc = extractInt(r, "\"cycles\"\\s*:\\s*(\\d+)", 1, 0);
-            rows.add(new TraceRow(idx, type, text, cyc));
+        String inner = rowsMatcher.group(1);
+
+        // Each row is an object { ... }
+        java.util.regex.Pattern objPattern =
+                java.util.regex.Pattern.compile("\\{([^}]*)}", java.util.regex.Pattern.DOTALL);
+        java.util.regex.Matcher rowMatcher = objPattern.matcher(inner);
+
+        while (rowMatcher.find()) {
+            String r = rowMatcher.group(1);
+
+            // index
+            int index = 0;
+            java.util.regex.Matcher mIndex =
+                    java.util.regex.Pattern.compile("\"index\"\\s*:\\s*(\\d+)").matcher(r);
+            if (mIndex.find()) {
+                try {
+                    index = Integer.parseInt(mIndex.group(1));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+
+            // type
+            String type = "";
+            java.util.regex.Matcher mType =
+                    java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(r);
+            if (mType.find()) {
+                type = mType.group(1);
+            }
+
+            // instruction text: "text" (old) OR "instr" (new)
+            String text = "";
+            java.util.regex.Matcher mText =
+                    java.util.regex.Pattern.compile("\"text\"\\s*:\\s*\"([^\"]*)\"").matcher(r);
+            if (mText.find()) {
+                text = mText.group(1);
+            } else {
+                java.util.regex.Matcher mInstr =
+                        java.util.regex.Pattern.compile("\"instr\"\\s*:\\s*\"([^\"]*)\"").matcher(r);
+                if (mInstr.find()) {
+                    text = mInstr.group(1);
+                }
+            }
+
+            // cycles
+            int cycles = 0;
+            java.util.regex.Matcher mCycles =
+                    java.util.regex.Pattern.compile("\"cycles\"\\s*:\\s*(\\d+)").matcher(r);
+            if (mCycles.find()) {
+                try {
+                    cycles = Integer.parseInt(mCycles.group(1));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+
+            rows.add(new TraceRow(index, type, text, cycles));
         }
+
         return rows;
     }
+
+
 
     private static String joinInts(List<Integer> xs) {
         if (xs == null || xs.isEmpty()) return "";

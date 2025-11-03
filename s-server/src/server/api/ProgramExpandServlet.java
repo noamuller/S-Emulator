@@ -1,55 +1,71 @@
 package server.api;
 
-import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
-import server.core.EngineFacadeImpl;
-import server.core.ProgramStore;
-import server.core.RunManager;
 import server.core.SimpleJson;
-import server.core.UserStore;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-@WebServlet(urlPatterns = "/api/programs/expand")
+@WebServlet("/api/programs/expand")
 public class ProgramExpandServlet extends HttpServlet {
 
-    private EngineFacade facade;
-
-    @Override
-    public void init() throws ServletException {
-        Object f = getServletContext().getAttribute("facade");
-        if (f instanceof EngineFacade) {
-            facade = (EngineFacade) f;
-        } else {
-            facade = new EngineFacadeImpl(ProgramStore.get(), UserStore.get(), new RunManager());
-            getServletContext().setAttribute("facade", facade);
-        }
+    private EngineFacade facade(HttpServletRequest req) {
+        return (EngineFacade) req.getServletContext().getAttribute("facade");
     }
 
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json; charset=UTF-8");
 
         String programId = req.getParameter("programId");
         String function  = req.getParameter("function");
-        String degreeStr = req.getParameter("degree");
-        int degree = (degreeStr == null || degreeStr.isBlank()) ? 0 : Integer.parseInt(degreeStr);
+        if (function == null || function.isBlank()) {
+            function = "(main)";
+        }
 
-        List<EngineFacade.TraceRow> rows = facade.expand(programId, function, degree);
+        int degree = 0;
+        String degreeParam = req.getParameter("degree");
+        if (degreeParam != null && !degreeParam.isBlank()) {
+            try {
+                degree = Integer.parseInt(degreeParam.trim());
+            } catch (NumberFormatException ignored) {
+                // keep degree = 0
+            }
+        }
 
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("function", (function == null || function.isBlank()) ? "(main)" : function);
-        out.put("degree", degree);
-        out.put("rows", rows);
+        try {
+            List<EngineFacade.TraceRow> rows = facade(req).expand(programId, function, degree);
 
-        resp.setContentType("application/json; charset=UTF-8");
-        SimpleJson.write(resp.getWriter(), out);
+            // Build JSON-friendly rows: list of maps
+            List<Map<String, Object>> rowsJson = new ArrayList<>();
+            for (EngineFacade.TraceRow r : rows) {
+                rowsJson.add(Map.of(
+                        "index",  r.index(),
+                        "type",   r.type(),
+                        "label",  r.label(),
+                        "instr",  r.instr(),
+                        "cycles", r.cycles()
+                ));
+            }
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("programId", programId);
+            out.put("function",  function);
+            out.put("degree",    degree);
+            out.put("rows",      rowsJson);
+
+            SimpleJson.write(resp.getWriter(), out);
+        } catch (Exception ex) {
+            resp.setStatus(400);
+            SimpleJson.write(resp.getWriter(),
+                    Map.of("error", ex.getMessage()));
+        }
     }
 }
