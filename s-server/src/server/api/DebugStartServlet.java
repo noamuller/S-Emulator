@@ -8,11 +8,13 @@ import server.core.EngineFacade;
 import server.core.SimpleJson;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
-@WebServlet(name = "RunStopServlet", urlPatterns = {"/api/debug/stop"})
-public class RunStopServlet extends HttpServlet {
+@WebServlet(name = "DebugStartServlet", urlPatterns = {"/api/debug/start"})
+public class DebugStartServlet extends HttpServlet {
 
     private EngineFacade facade() {
         Object f = getServletContext().getAttribute("facade");
@@ -22,13 +24,57 @@ public class RunStopServlet extends HttpServlet {
         throw new IllegalStateException("EngineFacade not initialized; check Bootstrap");
     }
 
+    private static List<Integer> parseInputs(String s) {
+        List<Integer> out = new ArrayList<>();
+        if (s == null || s.isBlank()) {
+            return out;
+        }
+        for (String part : s.split(",")) {
+            String p = part.trim();
+            if (p.isEmpty()) {
+                continue;
+            }
+            try {
+                out.add(Integer.parseInt(p));
+            } catch (NumberFormatException ignore) {
+                // invalid number -> treat as 0
+                out.add(0);
+            }
+        }
+        return out;
+    }
+
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         resp.setCharacterEncoding("UTF-8");
         resp.setContentType("application/json; charset=UTF-8");
 
-        String runId = req.getParameter("runId");
-        EngineFacade.DebugState st = facade().stop(runId);
+        String programId = req.getParameter("programId");
+        String function  = req.getParameter("function");
+        String degreeStr = req.getParameter("degree");
+        String arch      = req.getParameter("arch");
+        String inputsStr = req.getParameter("inputs");
+
+        if (function == null || function.isBlank()) {
+            function = "(main)";
+        }
+        if (arch == null || arch.isBlank()) {
+            arch = "Basic";
+        }
+
+        int degree = 0;
+        try {
+            degree = Integer.parseInt(degreeStr);
+        } catch (Exception ignored) {
+        }
+
+        List<Integer> inputs = parseInputs(inputsStr);
+
+        // For תרגיל 3 we can pass null as userId for debug
+        EngineFacade.DebugSession session =
+                facade().startDebug(null, programId, function, inputs, degree, arch);
+
+        EngineFacade.DebugState st = session.state();
 
         Map<String, Object> current = null;
         if (st.current() != null) {

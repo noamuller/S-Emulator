@@ -1,33 +1,57 @@
 package server.api;
 
 import jakarta.servlet.annotation.WebServlet;
-import jakarta.servlet.http.*;
-import java.io.IOException;
-import java.util.Map;
-import java.util.stream.Collectors;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import server.core.EngineFacade;
 import server.core.SimpleJson;
 
-@WebServlet("/api/runs/step")
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@WebServlet(name = "RunStepServlet", urlPatterns = {"/api/debug/step"})
 public class RunStepServlet extends HttpServlet {
 
     private EngineFacade facade() {
         Object f = getServletContext().getAttribute("facade");
-        if (f instanceof EngineFacade ef) return ef;
+        if (f instanceof EngineFacade ef) {
+            return ef;
+        }
         throw new IllegalStateException("EngineFacade not initialized; check Bootstrap");
     }
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        var body = SimpleJson.parse(req.getReader().lines().collect(Collectors.joining()));
-        long runId = Long.parseLong(String.valueOf(body.get("runId")));
-        var st = facade().step(String.valueOf(runId));
-        SimpleJson.write(resp.getWriter(), Map.of(
-                "runId", st.runId(),
-                "pc", st.pc(),
-                "cycles", st.cycles(),
-                "halted", st.halted(),
-                "variables", st.variables()
-        ));
+        resp.setCharacterEncoding("UTF-8");
+        resp.setContentType("application/json; charset=UTF-8");
+
+        String runId = req.getParameter("runId");
+        EngineFacade.DebugState st = facade().step(runId);
+
+        Map<String, Object> current = null;
+        if (st.current() != null) {
+            current = new LinkedHashMap<>();
+            current.put("index",  st.current().index());
+            current.put("type",   st.current().type());
+            current.put("text",   st.current().instr());
+            current.put("instr",  st.current().instr());
+            current.put("cycles", st.current().cycles());
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", true);
+        out.put("runId",   st.runId());
+        out.put("pc",      st.pc());
+        out.put("cycles",  st.cycles());
+        out.put("halted",  st.halted());
+        out.put("variables", st.variables());
+        out.put("vars",      st.variables());
+        if (current != null) {
+            out.put("current", current);
+        }
+
+        SimpleJson.write(resp.getWriter(), out);
     }
 }
